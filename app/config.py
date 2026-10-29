@@ -1,4 +1,4 @@
-"""Global configuration loader from environment variables."""
+"""Application configuration settings loaded from environment."""
 import os
 from dotenv import load_dotenv
 
@@ -18,4 +18,3 @@ CORS_ORIGINS = [
     for origin in os.getenv("CORS_ORIGINS", "*").split(",")
     if origin.strip()
 ]
-

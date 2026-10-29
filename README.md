@@ -1,14 +1,54 @@
 # DocuIntel Unified FastAPI Backend
 
-Production-ready, lightweight **FastAPI** backend delivering instant OCR parsing, OpenAI GPT-4o-mini structured extraction, pgvector RAG, and direct Supabase PostgreSQL persistence.
+Production-ready, modular **FastAPI** backend delivering instant OCR parsing, OpenAI GPT-4o-mini structured extraction, pgvector RAG semantic search, and direct Supabase PostgreSQL persistence.
 
-## Features
-- **Fast Parsing Engine**: Direct PDF parsing with PyMuPDF in <20ms.
-- **AI OCR & Extraction**: Powered by OpenAI GPT-4o-mini & Vision with strict schema compliance (zero dummy data).
-- **RAG Vector Search**: Dense 384-dimensional vector embeddings with OpenAI `text-embedding-3-small` stored in Supabase PostgreSQL (`document_embeddings`).
-- **File Retention**: Stores raw file base64 in PostgreSQL so original documents are always viewable via inline PDF viewer.
-- **REST APIs**: Full suite of endpoints for upload, streaming, human review corrections, approval, and semantic search.
-- **Interactive API Docs**: Swagger UI available at `http://localhost:8000/docs`.
+---
+
+## Clean Architecture Directory Structure
+
+```
+backend/
+├── app/
+│   ├── main.py                     # FastAPI application entrypoint & middleware
+│   ├── config.py                   # Environment configuration loader
+│   │
+│   ├── api/                        # Route controllers
+│   │   ├── router.py               # Aggregates v1 sub-routers under /api
+│   │   └── v1/
+│   │       ├── documents.py        # /api/documents (upload, stream, details, approve)
+│   │       ├── search.py           # /api/search & /api/search/rag
+│   │       ├── stats.py            # /api/stats & /api/results/{id} corrections
+│   │       └── health.py           # /health, /api/health probes
+│   │
+│   ├── core/                       # Core database & infrastructure
+│   │   └── database.py             # Supabase PostgreSQL threaded connection pool
+│   │
+│   ├── models/                     # Data Access Objects (Repositories)
+│   │   ├── document_repo.py        # Documents table CRUD & cache
+│   │   ├── result_repo.py          # Extraction results persistence
+│   │   └── embedding_repo.py       # pgvector embeddings & similarity search
+│   │
+│   ├── schemas/                    # Pydantic request & response models
+│   │   ├── document.py             # Document schemas
+│   │   ├── extraction.py           # Extraction & correction schemas
+│   │   └── search.py               # Search & RAG schemas
+│   │
+│   └── services/                   # Business logic & AI pipelines
+│       ├── pdf_parser.py           # PyMuPDF digital text & page parser (<20ms)
+│       ├── vision_ocr.py           # OpenAI GPT-4o-mini Vision OCR for images
+│       ├── extractor.py            # AI Structured invoice & document field extractor
+│       ├── rag_service.py          # OpenAI text-embedding-3-small & RAG synthesis
+│       └── pipeline.py             # Asynchronous processing pipeline orchestrator
+│
+├── tests/                          # Automated test suite
+│   └── test_pipeline.py            # End-to-end extraction and persistence tests
+│
+├── Dockerfile                      # Production container image
+├── docker-compose.yml              # Local multi-container setup
+├── requirements.txt                # Python package dependencies
+├── Procfile                        # Render start command
+└── README.md
+```
 
 ---
 
@@ -18,28 +58,28 @@ Production-ready, lightweight **FastAPI** backend delivering instant OCR parsing
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Start server
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# 2. Run the application
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+API running on: `http://localhost:8000`  
+Interactive Swagger Docs: `http://localhost:8000/docs`
 
 ---
 
 ## Docker Deployment
 
-### 1. Build and Run with Docker
 ```bash
+# Build and run
 docker build -t docuintel-backend .
 docker run -p 8000:8000 --env-file .env docuintel-backend
-```
 
-### 2. Run with Docker Compose
-```bash
+# Or with Docker Compose
 docker compose up --build -d
 ```
 
 ---
 
-## API Endpoints
+## REST API Endpoints
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
