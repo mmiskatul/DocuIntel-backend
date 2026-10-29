@@ -1,4 +1,4 @@
-"""Structured information extraction service powered by LangChain and ChatOpenAI."""
+"""Structured information extraction service powered by LangChain and ChatOpenAI with strict format validation."""
 import io
 import json
 import logging
@@ -27,7 +27,19 @@ class LineItemSchema(BaseModel):
 
 class DocumentExtractionSchema(BaseModel):
     document_title: str = Field(description="Document title or main header")
-    document_type: str = Field(description="Type of document, e.g. Vendor Invoice, Receipt, Project Specification, Report")
+    document_type: str = Field(
+        description="Classified type of document, e.g. Vendor Invoice, Commercial Receipt, Freight Waybill, Assignment Task, Project Specification, Academic Paper, Report"
+    )
+    is_supported_format: bool = Field(
+        description=(
+            "Set to TRUE ONLY IF the document is a financial billing document (Invoice, Commercial Receipt, Freight Waybill, Bill of Lading, Purchase Order, Utility Bill). "
+            "Set to FALSE if the document is an Assignment Task, Project Specification, Coding Challenge, Homework, Syllabus, CV, Resume, Article, or non-billing document."
+        )
+    )
+    rejection_reason: Optional[str] = Field(
+        default=None,
+        description="If is_supported_format is FALSE, explain clearly why it does not match the invoice/receipt/waybill format (e.g. 'Classified as Assignment Task Specification; missing financial transaction data')."
+    )
     supplier_name: Optional[str] = Field(default=None, description="Vendor, supplier or issuing organization")
     customer_name: Optional[str] = Field(default=None, description="Customer or billed entity")
     invoice_number: Optional[str] = Field(default=None, description="Invoice or reference number (null if not an invoice)")
@@ -54,12 +66,14 @@ EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
         (
-            "You are an expert Document Intelligence Assistant. "
-            "Analyze the document text and extract structured fields strictly according to the schema. "
-            "Rules:\n"
-            "1. Extract ONLY facts present in the text. DO NOT invent or assume values.\n"
-            "2. If the document is NOT an invoice (e.g. specification, assignment, report), set invoice_number, subtotal, tax, total to null.\n"
-            "3. If vendor/supplier is not explicitly labeled, use the document header or issuing title."
+            "You are a strict Enterprise Document Intelligence & Financial Ingestion Engine. "
+            "Your role is to strictly validate and extract financial billing documents (Invoices, Freight Waybills, Commercial Receipts, Purchase Orders, Utility Bills) "
+            "and STRICTLY REJECT any unsupported non-financial documents (such as Assignment Tasks, Homework, Coding Tests, Project Briefs, Specifications, Syllabi, Resumes, or Research Papers).\n\n"
+            "Format Rules:\n"
+            "1. If the document is an Assignment, Task Description, Project Specification, Academic Homework, or non-billing document, "
+            "you MUST set is_supported_format=False and provide a clear rejection_reason (e.g. 'Classified as Assignment Task Specification; document does not contain commercial invoice or waybill data').\n"
+            "2. If is_supported_format is False, set invoice_number, subtotal, tax, and total to null.\n"
+            "3. If the document is an Invoice, Receipt, or Waybill, set is_supported_format=True and extract all key-value fields and line items accurately."
         ),
     ),
     (
@@ -91,9 +105,7 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
     text = ""
     page_count = 1
 
-    # -------------------------------------------------------------------------
-    # 1. PDF Handling (Digital multi-page & Scanned multi-page)
-    # -------------------------------------------------------------------------
+    # 1. PDF Handling
     if lower.endswith(".pdf"):
         text, page_count = parse_pdf(file_bytes)
 
@@ -104,7 +116,6 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
             try:
                 doc = pymupdf.open(stream=file_bytes, filetype="pdf")
                 scanned_pages = []
-                # Process up to 15 pages safely to balance speed and completeness
                 max_pages = min(len(doc), 15)
                 for page_idx in range(max_pages):
                     pix = doc[page_idx].get_pixmap(dpi=150)
@@ -120,16 +131,12 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
                 if not text:
                     raise ValueError(f"Unable to parse or OCR scanned PDF '{filename}': {ocr_err}")
 
-    # -------------------------------------------------------------------------
-    # 2. Image Handling (Poor quality, rotation, blur, low-contrast)
-    # -------------------------------------------------------------------------
+    # 2. Image Handling
     elif lower.endswith((".png", ".jpg", ".jpeg", ".tiff", ".webp")):
         text = ocr_image(file_bytes)
         page_count = 1
 
-    # -------------------------------------------------------------------------
     # 3. CSV Handling
-    # -------------------------------------------------------------------------
     elif lower.endswith(".csv"):
         for encoding in ("utf-8", "utf-16", "latin-1", "cp1252"):
             try:
@@ -141,9 +148,7 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
             raise ValueError(f"Corrupted or unreadable CSV file: unable to decode characters in '{filename}'.")
         page_count = 1
 
-    # -------------------------------------------------------------------------
-    # 4. Excel Handling (Multi-Sheet .xlsx and legacy .xls)
-    # -------------------------------------------------------------------------
+    # 4. Excel Handling
     elif lower.endswith(".xlsx"):
         try:
             import openpyxl
@@ -161,7 +166,7 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
                     lines.extend(sheet_rows)
                 else:
                     lines.append("[Empty Sheet]")
-                lines.append("")  # Empty line separating sheets
+                lines.append("")
 
             text = "\n".join(lines).strip()
             page_count = max(1, len(wb.sheetnames))
@@ -195,7 +200,6 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
             raise ValueError(f"Corrupted or invalid legacy Excel (.xls) file: {exc}")
 
     else:
-        # Fallback for plain text or arbitrary documents
         try:
             text = file_bytes.decode("utf-8", errors="ignore").strip()
         except Exception:
@@ -208,11 +212,11 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
 
 
 # ==============================================================================
-# LangChain Structured Extraction Execution
+# LangChain Structured Extraction Execution with Strict Format Validation
 # ==============================================================================
 
 def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
-    """Invokes LangChain extraction chain to produce typed, validated document data."""
+    """Invokes LangChain extraction chain to produce typed, validated document data with strict format verification."""
     try:
         # Run LangChain LCEL Extraction Chain
         result: DocumentExtractionSchema = extraction_chain.invoke({
@@ -226,6 +230,8 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
         extracted = {
             "document_title": lines[0] if lines else filename,
             "document_type": "Document",
+            "is_supported_format": True,
+            "rejection_reason": None,
             "supplier_name": lines[0] if lines else None,
             "customer_name": None,
             "invoice_number": None,
@@ -239,26 +245,73 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
             "summary": "Document processed cleanly via LangChain fallback.",
         }
 
-    # Arithmetic checks
     issues = []
-    sub = extracted.get("subtotal")
-    tax = extracted.get("tax")
-    tot = extracted.get("total")
+    lower_fn = filename.lower()
+    lower_txt = text.lower()
 
-    if sub is not None and tax is not None and tot is not None:
-        try:
-            expected = round(float(sub) + float(tax), 2)
-            actual = round(float(tot), 2)
-            diff = round(abs(expected - actual), 2)
-            if diff > 0.05:
-                issues.append({
-                    "code": "TOTAL_MISMATCH",
-                    "severity": "error",
-                    "field": "total",
-                    "message": f"Arithmetic discrepancy: Subtotal ({sub}) + Tax ({tax}) = {expected}, but Total is {tot}. Difference: {diff}.",
-                })
-        except Exception:
-            pass
+    # ==========================================================================
+    # Strict Format Validation Guard (Deterministic Keyword & Structure Analysis)
+    # ==========================================================================
+    assignment_signals = [
+        "assignment", "task brief", "project specification", "homework", "take-home",
+        "coding challenge", "submission instructions", "rubric", "problem statement",
+        "deliverables", "evaluation criteria", "careguidebdtask", "task description",
+        "project overview", "requirements:", "acceptance criteria", "test case"
+    ]
+    is_assignment = any(sig in lower_fn or sig in lower_txt[:1500] for sig in assignment_signals)
+
+    billing_signals = [
+        "invoice", "receipt", "waybill", "bill of lading", "bill to:", "sold to:",
+        "remit to", "amount due", "balance due", "tax invoice", "subtotal", "vat reg"
+    ]
+    has_billing_signals = any(sig in lower_txt for sig in billing_signals)
+
+    is_supported = extracted.get("is_supported_format", True)
+    rejection_reason = extracted.get("rejection_reason")
+
+    # If assignment keywords detected without valid billing context:
+    if is_assignment and not has_billing_signals:
+        is_supported = False
+        rejection_reason = "Format Validation Failed: Document classified as an Assignment Task / Project Specification. The system only accepts standardized Invoices, Waybills, and Receipts."
+
+    # If document has no total, no invoice number, no line items, and non-billing type:
+    doc_type = (extracted.get("document_type") or "").lower()
+    if not any(t in doc_type for t in ["invoice", "receipt", "waybill", "bill"]):
+        if extracted.get("total") is None and extracted.get("invoice_number") is None and len(extracted.get("line_items", [])) == 0:
+            is_supported = False
+            if not rejection_reason:
+                rejection_reason = f"Format Mismatch: Document type '{extracted.get('document_type', 'General Document')}' is unsupported. Required: Invoice, Waybill, or Receipt with financial totals."
+
+    if not is_supported:
+        extracted["is_supported_format"] = False
+        extracted["rejection_reason"] = rejection_reason or "Document does not conform to supported financial invoice/waybill format."
+        issues.append({
+            "code": "FORMAT_REJECTED",
+            "severity": "fatal",
+            "field": "document_type",
+            "message": extracted["rejection_reason"],
+        })
+
+    # Arithmetic checks (only for valid financial documents)
+    if is_supported:
+        sub = extracted.get("subtotal")
+        tax = extracted.get("tax")
+        tot = extracted.get("total")
+
+        if sub is not None and tax is not None and tot is not None:
+            try:
+                expected = round(float(sub) + float(tax), 2)
+                actual = round(float(tot), 2)
+                diff = round(abs(expected - actual), 2)
+                if diff > 0.05:
+                    issues.append({
+                        "code": "TOTAL_MISMATCH",
+                        "severity": "error",
+                        "field": "total",
+                        "message": f"Arithmetic discrepancy: Subtotal ({sub}) + Tax ({tax}) = {expected}, but Total is {tot}. Difference: {diff}.",
+                    })
+            except Exception:
+                pass
 
     # Source evidence mapping for grounded review
     evidence = {}

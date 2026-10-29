@@ -25,7 +25,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             f"Extracted {len(text)} characters across {page_count} page(s).",
         )
 
-        # Step 2: Information Extraction
+        # Step 2: Information Extraction & Format Validation
         save_document({
             "id": doc_id,
             "status": "processing",
@@ -36,6 +36,46 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
         })
         extracted = extract_structured_fields(text, filename)
         issues = extracted.get("issues", [])
+        is_supported = extracted.get("is_supported_format", True)
+        format_issues = [i for i in issues if i.get("code") == "FORMAT_REJECTED" or i.get("severity") == "fatal"]
+
+        # If format validation fails (e.g. Assignment task, specification, non-billing document): REJECT!
+        if not is_supported or format_issues:
+            rejection_msg = extracted.get("rejection_reason") or (format_issues[0]["message"] if format_issues else "Document does not match supported business invoice/waybill format.")
+            logger.warning(f"Document {doc_id} ('{filename}') REJECTED: {rejection_msg}")
+
+            save_document({
+                "id": doc_id,
+                "status": "rejected",
+                "stage": "Format Rejected",
+                "error": rejection_msg,
+                "progress": 1.0,
+                "page_count": page_count,
+                "pages_done": page_count,
+            })
+            save_extraction_result({
+                "document_id": doc_id,
+                "invoice_number": None,
+                "invoice_date": None,
+                "supplier_name": extracted.get("supplier_name") or extracted.get("document_title"),
+                "customer_name": None,
+                "subtotal": None,
+                "tax": None,
+                "total": None,
+                "currency": "USD",
+                "data": extracted,
+                "confidence": {"overall": 0.35},
+                "overall_confidence": 0.35,
+                "needs_review": False,
+                "reviewed": False,
+            })
+            add_history(
+                doc_id,
+                "Document Rejected (Format Mismatch)",
+                f"Automated validation failed: {rejection_msg}. Document will NOT be stored in vector database.",
+            )
+            return
+
         has_errors = any(i.get("severity") == "error" for i in issues)
         needs_review = has_errors
 

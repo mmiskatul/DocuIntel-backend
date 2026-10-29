@@ -1,4 +1,4 @@
-"""Automated tests verifying multi-page PDFs, multiple sheets, poor image handling, and corrupted file safety."""
+"""Automated tests verifying multi-page PDFs, multiple sheets, poor image handling, corrupted files, and format rejection."""
 import io
 import os
 import sys
@@ -20,7 +20,6 @@ from app.models.document_repo import save_document, get_document, delete_documen
 def test_multi_page_pdf_handling():
     """Verify multi-page PDF extraction extracts all pages and reports accurate page count."""
     doc = pymupdf.open()
-    # Create 3 pages with distinct content
     for i in range(1, 4):
         page = doc.new_page(width=595, height=842)
         page.insert_text((72, 72), f"Invoice Section Page {i}: Total Due $1,{i}00.00")
@@ -63,7 +62,6 @@ def test_multi_sheet_excel_handling():
 
 def test_poor_quality_image_preprocessing():
     """Verify degraded, high-resolution, unoriented images are normalized cleanly."""
-    # Create a 2500x2000 low-contrast test image
     img = Image.new("RGB", (2500, 2000), color=(180, 180, 180))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=70)
@@ -72,7 +70,6 @@ def test_poor_quality_image_preprocessing():
     enhanced_bytes = preprocess_image(raw_bytes)
     assert len(enhanced_bytes) > 0
 
-    # Ensure output is a valid JPEG scaled within max dimension (2400)
     res_img = Image.open(io.BytesIO(enhanced_bytes))
     assert max(res_img.size) <= 2400
     assert res_img.format == "JPEG"
@@ -90,11 +87,9 @@ def test_corrupted_file_handling():
         "stage": "Uploaded",
     })
 
-    # Pass garbage non-PDF bytes
     garbage_bytes = b"NOT_A_VALID_PDF_HEADER_JUST_GARBAGE"
     run_document_pipeline(doc_id, "corrupted_document.pdf", garbage_bytes, "application/pdf")
 
-    # Document should be marked as failed with descriptive error, not crashed
     doc = get_document(doc_id)
     assert doc is not None
     assert doc["status"] == "failed"
@@ -102,7 +97,6 @@ def test_corrupted_file_handling():
     assert doc.get("error") is not None
     assert "PDF" in doc["error"] or "unreadable" in doc["error"].lower()
 
-    # Clean up test doc
     delete_document(doc_id)
 
 
@@ -110,3 +104,34 @@ def test_zero_byte_file_handling():
     """Verify zero-byte empty file raises ValueError and fails gracefully."""
     with pytest.raises(ValueError, match="empty"):
         extract_raw_text(b"", "empty_file.pdf")
+
+
+def test_assignment_document_format_rejection():
+    """Verify assignment task / project specification PDFs are automatically rejected by format validator."""
+    doc_id = str(uuid.uuid4())
+    # Generate clean PDF with assignment task content
+    doc_pdf = pymupdf.open()
+    page = doc_pdf.new_page(width=595, height=842)
+    page.insert_text((72, 72), "Senior AI Engineer Assignment Task Description\nDeliverables:\nTask 1: Pipeline\nSubmission Deadline: 5 Days")
+    pdf_bytes = doc_pdf.tobytes()
+    doc_pdf.close()
+
+    save_document({
+        "id": doc_id,
+        "filename": "senior_ai_assignment_task.pdf",
+        "file_type": "application/pdf",
+        "size_bytes": len(pdf_bytes),
+        "status": "queued",
+        "stage": "Uploaded",
+    })
+
+    run_document_pipeline(doc_id, "senior_ai_assignment_task.pdf", pdf_bytes, "application/pdf")
+
+    doc = get_document(doc_id)
+    assert doc is not None
+    assert doc["status"] == "rejected"
+    assert "Format" in doc["stage"] or "Rejected" in doc["stage"]
+    assert doc.get("error") is not None
+    assert "Assignment" in doc["error"] or "Format" in doc["error"]
+
+    delete_document(doc_id)
