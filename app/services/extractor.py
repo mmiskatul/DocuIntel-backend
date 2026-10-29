@@ -1,45 +1,80 @@
-"""Structured information extraction service powered by OpenAI GPT-4o-mini."""
+"""Structured information extraction service powered by LangChain and ChatOpenAI."""
 import io
 import json
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+from app.config import OPENAI_API_KEY
 from app.services.pdf_parser import parse_pdf
-from app.services.vision_ocr import get_openai_client, ocr_image
+from app.services.vision_ocr import ocr_image
 
 logger = logging.getLogger("docuintel.services.extractor")
 
-EXTRACTION_SYSTEM_PROMPT = """
-You are an expert Document Intelligence AI.
-Analyze the provided document text and extract structured fields in JSON format.
-Rules:
-1. Extract ONLY facts present in the text. DO NOT hallucinate or use dummy fallback data.
-2. If the document is NOT an invoice (e.g. project specification, report, resume, contract), set invoice-specific fields (invoice_number, subtotal, tax, total) to null.
-3. For supplier_name: If an invoice, extract the vendor/supplier. If a specification or report, extract the company or title header.
-4. Output must be strictly valid JSON matching this schema:
-{
-  "document_title": string,
-  "document_type": string (e.g. "Vendor Invoice", "Project Specification", "Receipt", "Report"),
-  "supplier_name": string or null,
-  "customer_name": string or null,
-  "invoice_number": string or null,
-  "invoice_date": string or null,
-  "due_date": string or null,
-  "subtotal": number or null,
-  "tax": number or null,
-  "total": number or null,
-  "currency": string (e.g. "USD", "EUR", "GBP", "BDT"),
-  "line_items": [
-    {
-      "description": string,
-      "quantity": number or null,
-      "unit_price": number or null,
-      "amount": number or null
-    }
-  ],
-  "summary": string (1-2 sentences summarizing document)
-}
-"""
 
+# ==============================================================================
+# LangChain Pydantic Structured Output Schemas
+# ==============================================================================
+
+class LineItemSchema(BaseModel):
+    description: str = Field(description="Description of line item or service")
+    quantity: Optional[float] = Field(default=1.0, description="Quantity")
+    unit_price: Optional[float] = Field(default=None, description="Price per unit")
+    amount: Optional[float] = Field(default=None, description="Total amount for item")
+
+
+class DocumentExtractionSchema(BaseModel):
+    document_title: str = Field(description="Document title or main header")
+    document_type: str = Field(description="Type of document, e.g. Vendor Invoice, Receipt, Project Specification, Report")
+    supplier_name: Optional[str] = Field(default=None, description="Vendor, supplier or issuing organization")
+    customer_name: Optional[str] = Field(default=None, description="Customer or billed entity")
+    invoice_number: Optional[str] = Field(default=None, description="Invoice or reference number (null if not an invoice)")
+    invoice_date: Optional[str] = Field(default=None, description="Invoice or document issue date")
+    due_date: Optional[str] = Field(default=None, description="Payment due date")
+    subtotal: Optional[float] = Field(default=None, description="Subtotal amount before tax")
+    tax: Optional[float] = Field(default=None, description="Tax amount")
+    total: Optional[float] = Field(default=None, description="Total due amount")
+    currency: Optional[str] = Field(default="USD", description="Currency symbol or code (USD, EUR, GBP, BDT)")
+    line_items: List[LineItemSchema] = Field(default_factory=list, description="Extracted line items")
+    summary: str = Field(description="Concise 1-2 sentence factual summary of the document")
+
+
+# LangChain Chat Model configured for structured output
+extraction_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0.0,
+    api_key=OPENAI_API_KEY,
+)
+
+structured_extractor = extraction_llm.with_structured_output(DocumentExtractionSchema)
+
+EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        (
+            "You are an expert Document Intelligence AI using LangChain. "
+            "Analyze the document text and extract structured fields strictly according to the schema. "
+            "Rules:\n"
+            "1. Extract ONLY facts present in the text. DO NOT invent or assume values.\n"
+            "2. If the document is NOT an invoice (e.g. specification, assignment, report), set invoice_number, subtotal, tax, total to null.\n"
+            "3. If vendor/supplier is not explicitly labeled, use the document header or issuing title."
+        ),
+    ),
+    (
+        "human",
+        "Filename: {filename}\n\nDocument Text:\n{text}",
+    ),
+])
+
+# LangChain LCEL Extraction Chain
+extraction_chain = EXTRACTION_PROMPT | structured_extractor
+
+
+# ==============================================================================
+# Text Extraction Helpers
+# ==============================================================================
 
 def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
     """Extracts raw text and determines page count across PDFs, images, and spreadsheets."""
@@ -89,24 +124,21 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
     return text, page_count
 
 
+# ==============================================================================
+# LangChain Structured Extraction Execution
+# ==============================================================================
+
 def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
-    """Extracts structured invoice or document fields using OpenAI GPT-4o-mini."""
-    client = get_openai_client()
-    prompt = f"Filename: {filename}\n\nDocument Text:\n{text[:4500]}"
+    """Invokes LangChain extraction chain to produce typed, validated document data."""
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-        )
-        content = response.choices[0].message.content
-        extracted = json.loads(content) if content else {}
+        # Run LangChain LCEL Extraction Chain
+        result: DocumentExtractionSchema = extraction_chain.invoke({
+            "filename": filename,
+            "text": text[:4500],
+        })
+        extracted = result.model_dump()
     except Exception as exc:
-        logger.error(f"OpenAI extraction error: {exc}")
+        logger.error(f"LangChain structured extraction error: {exc}")
         lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 2]
         extracted = {
             "document_title": lines[0] if lines else filename,
@@ -121,7 +153,7 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
             "total": None,
             "currency": "USD",
             "line_items": [],
-            "summary": "Document processed cleanly.",
+            "summary": "Document processed cleanly via LangChain fallback.",
         }
 
     # Arithmetic checks
@@ -145,7 +177,7 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Source evidence mapping
+    # Source evidence mapping for grounded review
     evidence = {}
     if extracted.get("invoice_number"):
         evidence["invoice_number"] = {"page": 1, "text": str(extracted["invoice_number"]), "confidence": 98}

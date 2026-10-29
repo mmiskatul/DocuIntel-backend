@@ -1,45 +1,87 @@
-"""RAG (Retrieval-Augmented Generation) & Semantic Vector Search Service."""
+"""RAG (Retrieval-Augmented Generation) & Semantic Vector Search Service powered by LangChain."""
 import logging
 from typing import Any, Dict, List
-from app.services.vision_ocr import get_openai_client
+from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from app.config import OPENAI_API_KEY
 from app.models.embedding_repo import save_document_embedding, search_document_embeddings
 
 logger = logging.getLogger("docuintel.services.rag")
 
+# LangChain Text Splitter for semantic chunking
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=800,
+    chunk_overlap=100,
+    separators=["\n\n", "\n", ". ", " ", ""],
+)
+
+# LangChain OpenAI Embeddings (384-dimensional pgvector compatibility)
+embeddings_model = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    dimensions=384,
+    api_key=OPENAI_API_KEY,
+)
+
+# LangChain Chat Model for RAG Synthesis
+rag_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0.2,
+    api_key=OPENAI_API_KEY,
+)
+
+# LangChain RAG Prompt Template
+RAG_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        (
+            "You are a professional Document Intelligence AI Assistant powered by LangChain. "
+            "Answer the user query based ONLY on the provided context snippets. "
+            "Cite the source document filenames whenever stating facts."
+        ),
+    ),
+    (
+        "human",
+        "Context:\n{context}\n\nQuestion: {question}",
+    ),
+])
+
+# LangChain LCEL Runnable Chain
+rag_chain = RAG_PROMPT_TEMPLATE | rag_llm | StrOutputParser()
+
 
 def generate_embedding(text: str) -> List[float]:
-    """Generates 384-dimensional vector embedding using OpenAI text-embedding-3-small."""
-    client = get_openai_client()
+    """Generates 384-dimensional vector embedding using LangChain OpenAIEmbeddings."""
     try:
-        res = client.embeddings.create(
-            input=text[:8000],
-            model="text-embedding-3-small",
-            dimensions=384,
-        )
-        return res.data[0].embedding
+        return embeddings_model.embed_query(text[:8000])
     except Exception as exc:
-        logger.error(f"Embedding error: {exc}")
+        logger.error(f"LangChain embedding error: {exc}")
         return [0.0] * 384
 
 
 def index_document_chunks(doc_id: str, full_text: str):
-    """Splits document text into semantic chunks and stores embeddings."""
+    """Splits document text using LangChain RecursiveCharacterTextSplitter and indexes embeddings."""
     if not full_text or len(full_text.strip()) < 10:
         return
 
-    paragraphs = [p.strip() for p in full_text.split("\n\n") if len(p.strip()) > 20]
-    if not paragraphs:
-        paragraphs = [full_text[:1000]]
+    # Use LangChain Text Splitter
+    chunks = text_splitter.split_text(full_text)
+    if not chunks:
+        chunks = [full_text[:1000]]
 
-    for chunk in paragraphs[:10]:
+    # Index top 10 chunks
+    for chunk in chunks[:10]:
         vector = generate_embedding(chunk)
         save_document_embedding(doc_id, chunk, vector)
 
-    logger.info(f"Indexed {len(paragraphs[:10])} vector chunks for document {doc_id}.")
+    logger.info(f"LangChain indexed {len(chunks[:10])} vector chunks for document {doc_id}.")
 
 
 def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Retrieves top semantic matches and synthesizes an answer with citations."""
+    """Retrieves top semantic matches and runs LangChain LCEL RAG chain for grounded answers."""
     query_vector = generate_embedding(query)
     matches = search_document_embeddings(query_vector, limit=limit)
 
@@ -50,10 +92,16 @@ def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
             "hits": [],
         }
 
-    context_blocks = []
-    citations = []
+    # Convert retrieved chunks to LangChain Document instances
+    langchain_docs: List[Document] = []
+    citations: List[Dict[str, Any]] = []
+
     for idx, m in enumerate(matches):
-        context_blocks.append(f"[{idx+1}] File: {m['filename']}\nSnippet: {m['chunk_text']}")
+        doc = Document(
+            page_content=m["chunk_text"],
+            metadata={"filename": m["filename"], "document_id": m["document_id"]},
+        )
+        langchain_docs.append(doc)
         citations.append({
             "document_id": m["document_id"],
             "filename": m["filename"],
@@ -61,28 +109,20 @@ def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
             "similarity": m["similarity"],
         })
 
-    context_str = "\n\n".join(context_blocks)
-    client = get_openai_client()
+    # Format context for LangChain chain
+    context_str = "\n\n".join(
+        f"[{i+1}] File: {d.metadata['filename']}\nSnippet: {d.page_content}"
+        for i, d in enumerate(langchain_docs)
+    )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful Document Intelligence AI Assistant. "
-                        "Answer the user query based ONLY on the provided context snippets. "
-                        "Cite the source document filenames whenever stating facts."
-                    ),
-                },
-                {"role": "user", "content": f"Context:\n{context_str}\n\nQuestion: {query}"},
-            ],
-            temperature=0.2,
-        )
-        answer = response.choices[0].message.content or "No response generated."
+        # Execute LangChain LCEL RAG Chain
+        answer = rag_chain.invoke({
+            "context": context_str,
+            "question": query,
+        })
     except Exception as exc:
-        logger.error(f"RAG synthesis error: {exc}")
+        logger.error(f"LangChain RAG chain invocation error: {exc}")
         answer = f"Found {len(matches)} matching document(s). Direct synthesis failed: {exc}"
 
     return {

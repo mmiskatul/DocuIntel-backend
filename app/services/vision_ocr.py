@@ -1,50 +1,41 @@
-"""Vision OCR service using OpenAI GPT-4o-mini."""
+"""Vision OCR service using LangChain and ChatOpenAI."""
 import base64
 import logging
-from typing import Optional
-from openai import OpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from app.config import OPENAI_API_KEY
 
 logger = logging.getLogger("docuintel.services.vision_ocr")
 
-_client: Optional[OpenAI] = None
-
-
-def get_openai_client() -> OpenAI:
-    global _client
-    if _client is None:
-        if not OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY is not configured.")
-        _client = OpenAI(api_key=OPENAI_API_KEY)
-    return _client
+# LangChain Chat Model for Vision OCR
+vision_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0.0,
+    api_key=OPENAI_API_KEY,
+    max_tokens=2000,
+)
 
 
 def ocr_image(image_bytes: bytes) -> str:
-    """Uses OpenAI GPT-4o-mini Vision to transcribe text and tables from image bytes."""
+    """Uses LangChain ChatOpenAI Vision to transcribe text and tables from image bytes."""
     try:
-        client = get_openai_client()
         b64 = base64.b64encode(image_bytes).decode("utf-8")
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a professional OCR engine. Transcribe all text, numbers, labels, and tables visible in this image accurately without summarizing.",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Extract all readable text from this document image:"},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64}"},
-                        },
-                    ],
-                },
-            ],
-            max_tokens=2000,
-        )
-        return response.choices[0].message.content or ""
+        messages = [
+            SystemMessage(
+                content="You are a professional OCR engine. Transcribe all text, numbers, labels, and tables visible in this image accurately without summarizing."
+            ),
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Extract all readable text from this document image:"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ]
+            ),
+        ]
+        response = vision_llm.invoke(messages)
+        return response.content if isinstance(response.content, str) else str(response.content)
     except Exception as exc:
-        logger.error(f"OpenAI Vision OCR error: {exc}")
+        logger.error(f"LangChain Vision OCR error: {exc}")
         return ""
