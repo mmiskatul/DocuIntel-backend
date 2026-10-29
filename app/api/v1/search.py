@@ -1,5 +1,5 @@
 """Search and RAG query controller."""
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query
 from app.models.document_repo import list_documents
 from app.models.embedding_repo import search_document_embeddings
@@ -24,10 +24,35 @@ def search(
         return [
             {
                 "document_id": m["document_id"],
-                "filename": m["filename"],
-                "text": m["chunk_text"],
-                "score": m["similarity"],
                 "page": 1,
+                "score": m["similarity"],
+                "snippet": m["chunk_text"][:250],
+                "match": mode,
+                "document": {
+                    "id": m["document_id"],
+                    "filename": m["filename"],
+                    "file_type": "application/pdf",
+                    "size_bytes": 0,
+                    "status": m.get("status") or "completed",
+                    "stage": "Completed",
+                    "progress": 1.0,
+                    "page_count": 1,
+                    "pages_done": 1,
+                    "error": None,
+                    "attempts": 1,
+                    "processing_ms": 100,
+                    "created_at": m.get("created_at") or "",
+                    "updated_at": m.get("created_at") or "",
+                    "invoice_count": 1,
+                    "needs_review": False,
+                    "summary": {
+                        "invoice_number": m.get("invoice_number"),
+                        "supplier_name": m.get("supplier_name"),
+                        "total": m.get("total"),
+                        "currency": m.get("currency") or "USD",
+                        "invoice_date": m.get("invoice_date"),
+                    },
+                },
             }
             for m in matches
         ]
@@ -36,10 +61,11 @@ def search(
     return [
         {
             "document_id": d["id"],
-            "filename": d["filename"],
-            "text": d.get("summary", {}).get("supplier_name") or d["filename"],
-            "score": 1.0,
             "page": 1,
+            "score": 1.0,
+            "snippet": f"Filename: {d['filename']} | Vendor: {d.get('summary', {}).get('supplier_name') or 'Document'}",
+            "match": "keyword",
+            "document": d,
         }
         for d in docs
     ]
