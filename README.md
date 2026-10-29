@@ -26,6 +26,21 @@ docker build -t docuintel-backend .
 docker run -p 8000:8000 --env-file .env docuintel-backend
 ```
 
+## Vercel Serverless Deployment
+
+This NestJS backend is pre-configured for instant **Vercel Serverless** deployment with 24/7 fast wake-up and zero sleeping:
+
+1. Push your repository to GitHub: [`Task-backend`](https://github.com/mmiskatul/Task-backend).
+2. In [vercel.com](https://vercel.com), click **Add New Project** $\rightarrow$ Import `Task-backend`.
+3. Under **Environment Variables**, add:
+   - `DATABASE_URL`: Your Supabase pooler connection string
+   - `SUPABASE_URL`: Your Supabase project URL
+   - `SUPABASE_KEY`: Your Supabase anon or service-role key
+   - `JWT_SECRET`: Your JWT secret
+   - `OCR_SERVICE_URL`: URL to your deployed `ocr-model` service
+   - `REDIS_URL`: Your Upstash Redis URL (`rediss://...`)
+4. Click **Deploy**! All API endpoints (`/api/*`) and Swagger docs will be live instantly.
+
 ## Supabase Schema Setup
 
 1. Open your project on [supabase.com](https://supabase.com).
