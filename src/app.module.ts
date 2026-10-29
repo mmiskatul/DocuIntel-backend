@@ -1,6 +1,8 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
+import { WarmupMiddleware } from './common/middleware/warmup.middleware';
 import { DocumentsController } from './documents/documents.controller';
 import { DocumentsService } from './documents/documents.service';
 import { OcrService } from './ocr/ocr.service';
@@ -17,7 +19,11 @@ import { SupabaseModule } from './supabase/supabase.module';
     SupabaseModule,
     AuthModule,
   ],
-  controllers: [DocumentsController, SearchController],
+  controllers: [AppController, DocumentsController, SearchController],
   providers: [OcrService, DocumentsService, SearchService],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(WarmupMiddleware).forRoutes('*');
+  }
+}

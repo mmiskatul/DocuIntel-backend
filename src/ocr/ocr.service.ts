@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import * as FormData from 'form-data';
@@ -23,10 +23,12 @@ export interface ValidationResult {
 }
 
 @Injectable()
-export class OcrService {
+export class OcrService implements OnApplicationBootstrap {
   private readonly logger = new Logger(OcrService.name);
   private ocrUrl: string;
   private apiKey: string;
+  private lastPingTime = 0;
+  private isWakingUp = false;
 
   constructor(private configService: ConfigService) {
     this.ocrUrl = (
@@ -34,6 +36,67 @@ export class OcrService {
       'http://localhost:7860'
     ).replace(/\/$/, '');
     this.apiKey = this.configService.get<string>('OCR_SERVICE_API_KEY') || '';
+  }
+
+  async onApplicationBootstrap() {
+    this.logger.log(`Backend initialized. Proactively waking up OCR Microservice at: ${this.ocrUrl}`);
+    this.wakeupOcrService();
+  }
+
+  getOcrUrl(): string {
+    return this.ocrUrl;
+  }
+
+  /**
+   * Fires a non-blocking background ping to wake up the OCR service on Render.
+   */
+  wakeupOcrService(): void {
+    const now = Date.now();
+    // Throttle wakeup calls to once every 5 minutes to avoid flood
+    if (now - this.lastPingTime < 5 * 60 * 1000 || this.isWakingUp) {
+      return;
+    }
+    this.isWakingUp = true;
+    this.lastPingTime = now;
+
+    axios
+      .get(`${this.ocrUrl}/health`, {
+        timeout: 30000,
+        headers: this.apiKey ? { 'X-API-Key': this.apiKey } : {},
+      })
+      .then((res) => {
+        this.logger.log(`OCR Service warmup ping successful: Status ${res.status}`);
+        this.isWakingUp = false;
+      })
+      .catch((err) => {
+        this.logger.warn(`OCR Service warmup ping sent (server may be spinning up): ${err.message}`);
+        this.isWakingUp = false;
+      });
+  }
+
+  /**
+   * Health and latency check for the OCR microservice.
+   */
+  async checkHealth(): Promise<{ status: string; latency_ms: number; url: string }> {
+    const t0 = Date.now();
+    try {
+      const res = await axios.get(`${this.ocrUrl}/health`, {
+        timeout: 10000,
+        headers: this.apiKey ? { 'X-API-Key': this.apiKey } : {},
+      });
+      return {
+        status: res.data && res.data.status === 'ok' ? 'online' : 'degraded',
+        latency_ms: Date.now() - t0,
+        url: this.ocrUrl,
+      };
+    } catch (err) {
+      this.wakeupOcrService();
+      return {
+        status: 'waking_up',
+        latency_ms: Date.now() - t0,
+        url: this.ocrUrl,
+      };
+    }
   }
 
   async runOcr(buffer: Buffer, filename: string): Promise<OCRResult> {
