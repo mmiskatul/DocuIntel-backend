@@ -88,6 +88,7 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
             r = cur.fetchone()
             doc["invoice_count"] = 1 if r else 0
             doc["needs_review"] = r.get("needs_review", False) if r else False
+            doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else (0.82 if doc.get("status") == "needs_review" else 0.96)
             doc["summary"] = {
                 "invoice_number": r.get("invoice_number") if r else None,
                 "supplier_name": r.get("supplier_name") if r else None,
@@ -129,6 +130,7 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                 r = cur.fetchone()
                 doc["invoice_count"] = 1 if r else 0
                 doc["needs_review"] = r.get("needs_review", False) if r else False
+                doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else (0.82 if doc.get("status") == "needs_review" else 0.96)
                 doc["summary"] = {
                     "invoice_number": r.get("invoice_number") if r else None,
                     "supplier_name": r.get("supplier_name") if r else None,
@@ -149,9 +151,13 @@ def delete_document(doc_id: str) -> bool:
             cur.execute("DELETE FROM extraction_results WHERE document_id = %s;", (doc_id,))
             cur.execute("DELETE FROM documents WHERE id = %s;", (doc_id,))
             conn.commit()
-            _history_store.pop(doc_id, None)
             _file_cache.pop(doc_id, None)
+            _history_store.pop(doc_id, None)
             return True
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"delete_document error: {exc}")
+        return False
     finally:
         release_conn(conn)
 
@@ -164,9 +170,13 @@ def delete_all_documents() -> bool:
             cur.execute("DELETE FROM extraction_results;")
             cur.execute("DELETE FROM documents;")
             conn.commit()
-            _history_store.clear()
             _file_cache.clear()
+            _history_store.clear()
             return True
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"delete_all_documents error: {exc}")
+        return False
     finally:
         release_conn(conn)
 
@@ -180,7 +190,7 @@ def add_history(doc_id: str, action: str, message: str, reviewer: Optional[str] 
         "action": action,
         "message": message,
         "reviewer": reviewer,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
     })
 
 
@@ -205,19 +215,28 @@ def get_stats() -> Dict[str, Any]:
             total = sum(counts.values())
 
             cur.execute("SELECT count(*) FROM extraction_results WHERE needs_review = TRUE;")
-            review_count = cur.fetchone()["count"]
+            review_row = cur.fetchone()
+            review_count = review_row["count"] if review_row else 0
+
+            cur.execute("SELECT AVG(overall_confidence) AS avg_conf FROM extraction_results;")
+            conf_row = cur.fetchone()
+            avg_conf = float(conf_row["avg_conf"]) if conf_row and conf_row.get("avg_conf") is not None else 0.0
+
+            completed_count = counts.get("completed", 0)
+            completed_pct = round((completed_count / total * 100), 1) if total > 0 else 0.0
 
             return {
                 "total": total,
                 "by_status": {
-                    "completed": counts.get("completed", 0),
+                    "completed": completed_count,
                     "needs_review": counts.get("needs_review", 0),
                     "processing": counts.get("processing", 0),
                     "queued": counts.get("queued", 0),
                     "failed": counts.get("failed", 0),
                 },
+                "completed_percentage": completed_pct,
                 "open_review_items": review_count,
-                "avg_confidence": 0.96,
+                "avg_confidence": avg_conf,
             }
     finally:
         release_conn(conn)
