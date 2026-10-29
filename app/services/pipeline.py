@@ -98,3 +98,8 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "error": str(exc),
             "progress": 1.0,
         })
+        add_history(
+            doc_id,
+            "Processing Failed",
+            f"Error: {exc}",
+        )

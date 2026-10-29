@@ -73,55 +73,138 @@ extraction_chain = EXTRACTION_PROMPT | structured_extractor
 
 
 # ==============================================================================
-# Text Extraction Helpers
+# Robust Multi-Format Text Extraction
 # ==============================================================================
 
 def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
-    """Extracts raw text and determines page count across PDFs, images, and spreadsheets."""
+    """
+    Robust text extraction engine that handles:
+    1. Multi-page PDFs (both digital extraction & multi-page scanned OCR fallback).
+    2. Multiple sheets in Excel workbooks (.xlsx and legacy .xls).
+    3. Poor image quality (enhanced pre-processing + vision OCR).
+    4. Corrupted files (raises explicit, actionable ValueError).
+    """
+    if not file_bytes or len(file_bytes) == 0:
+        raise ValueError(f"Uploaded file '{filename}' is empty (0 bytes).")
+
     lower = filename.lower()
     text = ""
     page_count = 1
 
+    # -------------------------------------------------------------------------
+    # 1. PDF Handling (Digital multi-page & Scanned multi-page)
+    # -------------------------------------------------------------------------
     if lower.endswith(".pdf"):
         text, page_count = parse_pdf(file_bytes)
-        if len(text) < 20 and page_count > 0:
+
+        # Scanned PDF check: digital text is absent or near-empty
+        if len(text.strip()) < 40 and page_count > 0:
+            logger.info(f"Digital text absent in '{filename}'. Executing multi-page vision OCR across {page_count} page(s)...")
             import pymupdf
             try:
                 doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-                pix = doc[0].get_pixmap(dpi=150)
-                text = ocr_image(pix.tobytes("png"))
-            except Exception as ocr_err:
-                logger.warn(f"PDF fallback OCR error: {ocr_err}")
+                scanned_pages = []
+                # Process up to 15 pages safely to balance speed and completeness
+                max_pages = min(len(doc), 15)
+                for page_idx in range(max_pages):
+                    pix = doc[page_idx].get_pixmap(dpi=150)
+                    page_ocr = ocr_image(pix.tobytes("png"))
+                    if page_ocr and page_ocr.strip():
+                        scanned_pages.append(f"--- Page {page_idx + 1} ---\n{page_ocr.strip()}")
 
+                if scanned_pages:
+                    text = "\n\n".join(scanned_pages)
+                    page_count = len(doc)
+            except Exception as ocr_err:
+                logger.warning(f"PDF multi-page OCR fallback notice: {ocr_err}")
+                if not text:
+                    raise ValueError(f"Unable to parse or OCR scanned PDF '{filename}': {ocr_err}")
+
+    # -------------------------------------------------------------------------
+    # 2. Image Handling (Poor quality, rotation, blur, low-contrast)
+    # -------------------------------------------------------------------------
     elif lower.endswith((".png", ".jpg", ".jpeg", ".tiff", ".webp")):
         text = ocr_image(file_bytes)
+        page_count = 1
 
+    # -------------------------------------------------------------------------
+    # 3. CSV Handling
+    # -------------------------------------------------------------------------
     elif lower.endswith(".csv"):
-        try:
-            text = file_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            text = ""
+        for encoding in ("utf-8", "utf-16", "latin-1", "cp1252"):
+            try:
+                text = file_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if not text:
+            raise ValueError(f"Corrupted or unreadable CSV file: unable to decode characters in '{filename}'.")
+        page_count = 1
 
-    elif lower.endswith((".xlsx", ".xls")):
+    # -------------------------------------------------------------------------
+    # 4. Excel Handling (Multi-Sheet .xlsx and legacy .xls)
+    # -------------------------------------------------------------------------
+    elif lower.endswith(".xlsx"):
         try:
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
             lines = []
-            for sheet in wb.sheetnames:
-                ws = wb[sheet]
+            for sheet_name in wb.sheetnames:
+                lines.append(f"=== Sheet: {sheet_name} ===")
+                ws = wb[sheet_name]
+                sheet_rows = []
                 for row in ws.iter_rows(values_only=True):
-                    row_vals = [str(c) for c in row if c is not None]
+                    row_vals = [str(c).strip() for c in row if c is not None and str(c).strip()]
                     if row_vals:
-                        lines.append(" | ".join(row_vals))
-            text = "\n".join(lines)
-            page_count = len(wb.sheetnames)
+                        sheet_rows.append(" | ".join(row_vals))
+                if sheet_rows:
+                    lines.extend(sheet_rows)
+                else:
+                    lines.append("[Empty Sheet]")
+                lines.append("")  # Empty line separating sheets
+
+            text = "\n".join(lines).strip()
+            page_count = max(1, len(wb.sheetnames))
         except Exception as exc:
-            logger.warn(f"Excel parsing error: {exc}")
+            logger.error(f"Excel .xlsx parsing error: {exc}")
+            raise ValueError(f"Corrupted or invalid Excel (.xlsx) file: {exc}")
 
-    if not text:
-        text = f"Document: {filename}\n[Binary content without parseable text]"
+    elif lower.endswith(".xls"):
+        try:
+            import xlrd
+            wb = xlrd.open_workbook(file_contents=file_bytes)
+            lines = []
+            for sheet_name in wb.sheet_names():
+                lines.append(f"=== Sheet: {sheet_name} ===")
+                ws = wb.sheet_by_name(sheet_name)
+                sheet_rows = []
+                for r_idx in range(ws.nrows):
+                    row_vals = [str(ws.cell_value(r_idx, c_idx)).strip() for c_idx in range(ws.ncols) if str(ws.cell_value(r_idx, c_idx)).strip()]
+                    if row_vals:
+                        sheet_rows.append(" | ".join(row_vals))
+                if sheet_rows:
+                    lines.extend(sheet_rows)
+                else:
+                    lines.append("[Empty Sheet]")
+                lines.append("")
 
-    return text, page_count
+            text = "\n".join(lines).strip()
+            page_count = max(1, len(wb.sheet_names()))
+        except Exception as exc:
+            logger.error(f"Excel legacy .xls parsing error: {exc}")
+            raise ValueError(f"Corrupted or invalid legacy Excel (.xls) file: {exc}")
+
+    else:
+        # Fallback for plain text or arbitrary documents
+        try:
+            text = file_bytes.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            text = ""
+
+    if not text or not text.strip():
+        raise ValueError(f"No extractable text or content could be identified in '{filename}'. The file may be empty or corrupted.")
+
+    return text.strip(), page_count
 
 
 # ==============================================================================
