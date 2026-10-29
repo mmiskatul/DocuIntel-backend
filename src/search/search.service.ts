@@ -334,4 +334,50 @@ export class SearchService {
       },
     };
   }
+
+  /**
+   * High-Performance Retrieval-Augmented Generation (RAG):
+   * 1. Vector + Filter Retrieval: Extracts candidate chunks from Supabase pgvector HNSW index.
+   * 2. Context Formulation: Builds grounded AP context with supplier, amounts, and discrepancies.
+   * 3. AI Generation: Synthesizes a factual, cited response in real time.
+   */
+  async ragSearch(query: string, provider: 'auto' | 'openai' | 'anthropic' | 'deepseek' | 'grok' = 'auto') {
+    const t0 = Date.now();
+    const hits = await this.search(query, 'hybrid', 6);
+
+    const contextChunks: string[] = [];
+    for (const h of hits) {
+      const summary = h.document.summary;
+      let text = `[Document: ${h.document.filename}] (Match: ${h.match}, Score: ${(h.score * 100).toFixed(0)}%)\n`;
+      text += `Supplier: ${summary.supplier_name || 'N/A'}, Invoice Number: ${summary.invoice_number || 'N/A'}\n`;
+      text += `Total: ${summary.currency || '$'}${summary.total != null ? summary.total.toLocaleString() : 'N/A'}\n`;
+      if (h.snippet) text += `Extracted Content/Snippet: ${h.snippet}\n`;
+      const explanation = (h as any).explanation;
+      if (explanation) text += `Discrepancy / Explanation: ${explanation}\n`;
+      contextChunks.push(text.trim());
+    }
+
+    const context = contextChunks.join('\n\n---\n\n');
+    const ragResult = await this.ocrService.queryRag(query, context, provider);
+    const latency_ms = Date.now() - t0;
+
+    const citations = hits.map((h) => ({
+      document_id: h.document_id,
+      filename: h.document.filename,
+      supplier: h.document.summary.supplier_name,
+      total: h.document.summary.total,
+      currency: h.document.summary.currency,
+      similarity: h.score,
+      snippet: h.snippet,
+    }));
+
+    return {
+      query,
+      answer: ragResult.answer,
+      provider_used: ragResult.provider_used,
+      citations,
+      hits,
+      latency_ms,
+    };
+  }
 }

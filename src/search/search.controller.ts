@@ -15,6 +15,14 @@ export class SearchController {
     return this.searchService.search(query, mode, Number(limit) || 20);
   }
 
+  @Get('search/rag')
+  async ragSearch(
+    @Query('q') query: string = '',
+    @Query('provider') provider: 'auto' | 'openai' | 'anthropic' | 'deepseek' | 'grok' = 'auto',
+  ) {
+    return this.searchService.ragSearch(query, provider);
+  }
+
   @Get('search/export')
   async exportSearchCsv(
     @Query('q') query: string = '',
