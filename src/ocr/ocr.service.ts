@@ -79,14 +79,14 @@ export class OcrService {
     }
   }
 
-  async generateEmbeddings(text: string, model: 'bge-small' | 'minilm' | 'openai' = 'bge-small'): Promise<number[]> {
+  async generateEmbeddings(text: string, model: 'openai' = 'openai'): Promise<number[]> {
     const headers: Record<string, string> = {};
     if (this.apiKey) headers['X-API-Key'] = this.apiKey;
 
     try {
       const response = await axios.post(
         `${this.ocrUrl}/embed`,
-        { text, model },
+        { text, model: 'openai' },
         { headers, timeout: 20000 },
       );
       const list = response.data.embeddings;
