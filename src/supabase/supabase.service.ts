@@ -174,6 +174,48 @@ export class SupabaseService implements OnModuleInit, OnModuleDestroy {
     return all;
   }
 
+  async deleteDocument(id: string) {
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query('DELETE FROM validation_issues WHERE document_id = $1', [id]);
+        await this.pgPool.query('DELETE FROM extraction_results WHERE document_id = $1', [id]);
+        await this.pgPool.query('DELETE FROM document_embeddings WHERE document_id = $1', [id]);
+        await this.pgPool.query('DELETE FROM documents WHERE id = $1', [id]);
+      } catch (err: any) {
+        this.logger.error(`PostgreSQL deleteDocument error: ${err.message}`);
+      }
+    }
+    if (this.client) {
+      await this.client.from('extraction_results').delete().eq('document_id', id);
+      await this.client.from('document_embeddings').delete().eq('document_id', id);
+      await this.client.from('documents').delete().eq('id', id);
+    }
+    this.memoryDocs.delete(id);
+    this.memoryResults.delete(id);
+    return { success: true, id };
+  }
+
+  async deleteAllDocuments() {
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query('DELETE FROM validation_issues');
+        await this.pgPool.query('DELETE FROM extraction_results');
+        await this.pgPool.query('DELETE FROM document_embeddings');
+        await this.pgPool.query('DELETE FROM documents');
+      } catch (err: any) {
+        this.logger.error(`PostgreSQL deleteAllDocuments error: ${err.message}`);
+      }
+    }
+    if (this.client) {
+      await this.client.from('extraction_results').delete().neq('id', 0);
+      await this.client.from('document_embeddings').delete().neq('id', 0);
+      await this.client.from('documents').delete().neq('id', '');
+    }
+    this.memoryDocs.clear();
+    this.memoryResults.clear();
+    return { success: true };
+  }
+
   // ---------------------------------------------------------------------------
   // Extraction Results Table
   // ---------------------------------------------------------------------------

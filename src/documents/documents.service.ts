@@ -29,372 +29,24 @@ export class DocumentsService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    await this.seedDemoDocumentsIfEmpty();
+    this.logger.log('DocumentsService initialized with clean database (dummy auto-seeding disabled).');
+  }
+
+  async deleteDocument(id: string) {
+    this.fileStore.delete(id);
+    this.auditHistory.delete(id);
+    return this.supabase.deleteDocument(id);
+  }
+
+  async deleteAllDocuments() {
+    this.fileStore.clear();
+    this.auditHistory.clear();
+    return this.supabase.deleteAllDocuments();
   }
 
   async seedDemoDocumentsIfEmpty() {
-    try {
-      const existing = await this.supabase.listDocuments();
-      if (existing && existing.length >= 7) {
-        return; // Already populated
-      }
-      this.logger.log('Seeding reference documents matching enterprise specifications...');
-
-      const SEED_DOCS = [
-        {
-          id: 'a1111111-1111-4111-8111-111111111111',
-          filename: 'INV-2026-0341.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 245100,
-          status: 'processing',
-          stage: 'AI Information Extraction',
-          progress: 0.65,
-          page_count: 1,
-          pages_done: 0,
-          error: null,
-          created_at: '2026-01-23T10:14:00Z',
-          updated_at: '2026-01-23T10:14:30Z',
-          doc_type: 'Invoice',
-          vendor: 'HellasFresh',
-          confidence_level: 'Medium',
-          result: {
-            invoice_number: 'INV-2026-0341',
-            invoice_date: '2026-01-23',
-            supplier_name: 'HellasFresh',
-            subtotal: 1140.00,
-            tax: 144.60,
-            total: 1284.60,
-            currency: 'EUR',
-            confidence: 0.72,
-            data: {
-              invoice_number: 'INV-2026-0341',
-              supplier_name: 'HellasFresh',
-              total: 1284.60,
-              subtotal: 1140.00,
-              tax: 144.60,
-              currency: 'EUR',
-              type: 'Invoice',
-              confidence_level: 'Medium',
-              line_items: [
-                { description: 'Organic Vine Tomatoes 200kg', quantity: 200, unit_price: 3.20, amount: 640.00 },
-                { description: 'Greek Kalamata Extra Virgin Olives 140kg', quantity: 140, unit_price: 4.60, amount: 644.60 },
-              ],
-            },
-          },
-        },
-        {
-          id: 'b2222222-2222-4222-8222-222222222222',
-          filename: 'PO-4500130411.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 189200,
-          status: 'completed',
-          stage: 'Completed',
-          progress: 1.0,
-          page_count: 1,
-          pages_done: 1,
-          error: null,
-          created_at: '2026-01-22T09:30:00Z',
-          updated_at: '2026-01-22T09:30:45Z',
-          doc_type: 'Purchase Order',
-          vendor: 'HellasFresh',
-          confidence_level: 'High',
-          result: {
-            invoice_number: 'PO-4500130411',
-            invoice_date: '2026-01-22',
-            supplier_name: 'HellasFresh',
-            subtotal: 1140.00,
-            tax: 145.00,
-            total: 1285.00,
-            currency: 'EUR',
-            confidence: 0.96,
-            data: {
-              invoice_number: 'PO-4500130411',
-              supplier_name: 'HellasFresh',
-              total: 1285.00,
-              subtotal: 1140.00,
-              tax: 145.00,
-              currency: 'EUR',
-              type: 'Purchase Order',
-              confidence_level: 'High',
-            },
-          },
-        },
-        {
-          id: 'c3333333-3333-4333-8333-333333333333',
-          filename: 'INV-2026-0342.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 312000,
-          status: 'needs_review',
-          stage: 'Validation Alert',
-          progress: 1.0,
-          page_count: 1,
-          pages_done: 1,
-          error: null,
-          created_at: '2026-01-23T11:00:00Z',
-          updated_at: '2026-01-23T11:02:15Z',
-          doc_type: 'Invoice',
-          vendor: 'Galaxi Logistics',
-          confidence_level: 'Medium',
-          result: {
-            invoice_number: 'INV-2026-0342',
-            invoice_date: '2026-01-23',
-            supplier_name: 'Galaxi Logistics',
-            subtotal: 890.00,
-            tax: 92.10,
-            total: 982.10,
-            currency: 'EUR',
-            confidence: 0.81,
-            needs_review: true,
-            data: {
-              invoice_number: 'INV-2026-0342',
-              supplier_name: 'Galaxi Logistics',
-              total: 982.10,
-              currency: 'EUR',
-              type: 'Invoice',
-              confidence_level: 'Medium',
-            },
-          },
-        },
-        {
-          id: 'd4444444-4444-4444-8444-444444444444',
-          filename: 'PO-4500130412.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 205000,
-          status: 'completed',
-          stage: 'Completed',
-          progress: 1.0,
-          page_count: 1,
-          pages_done: 1,
-          error: null,
-          created_at: '2026-01-22T14:15:00Z',
-          updated_at: '2026-01-22T14:15:30Z',
-          doc_type: 'Purchase Order',
-          vendor: 'Galaxi Logistics',
-          confidence_level: 'High',
-          result: {
-            invoice_number: 'PO-4500130412',
-            invoice_date: '2026-01-22',
-            supplier_name: 'Galaxi Logistics',
-            subtotal: 890.00,
-            tax: 92.10,
-            total: 982.10,
-            currency: 'EUR',
-            confidence: 0.98,
-            data: {
-              invoice_number: 'PO-4500130412',
-              supplier_name: 'Galaxi Logistics',
-              total: 982.10,
-              currency: 'EUR',
-              type: 'Purchase Order',
-              confidence_level: 'High',
-            },
-          },
-        },
-        {
-          id: 'e5555555-5555-4555-8555-555555555555',
-          filename: 'INV-2026-0334.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 198000,
-          status: 'failed',
-          stage: 'Validation Error',
-          progress: 0.8,
-          page_count: 1,
-          pages_done: 0,
-          error: 'PO mismatch: Line totals sum €740.50 does not match PO #4500130222 (€739.90). Difference: €0.60',
-          created_at: '2026-01-22T16:20:00Z',
-          updated_at: '2026-01-22T16:20:45Z',
-          doc_type: 'Invoice',
-          vendor: 'Ionian Foods',
-          confidence_level: 'Low',
-          result: {
-            invoice_number: 'INV-2026-0334',
-            invoice_date: '2026-01-22',
-            supplier_name: 'Ionian Foods',
-            subtotal: 680.00,
-            tax: 60.50,
-            total: 740.50,
-            currency: 'EUR',
-            confidence: 0.45,
-            data: {
-              invoice_number: 'INV-2026-0334',
-              supplier_name: 'Ionian Foods',
-              total: 740.50,
-              subtotal: 680.00,
-              tax: 60.50,
-              currency: 'EUR',
-              type: 'Invoice',
-              confidence_level: 'Low',
-              tax_discrepancy: true,
-            },
-          },
-        },
-        {
-          id: 'f6666666-6666-4666-8666-666666666666',
-          filename: 'PO-4500130222.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 175000,
-          status: 'completed',
-          stage: 'Completed',
-          progress: 1.0,
-          page_count: 1,
-          pages_done: 1,
-          error: null,
-          created_at: '2026-01-18T09:00:00Z',
-          updated_at: '2026-01-18T09:00:40Z',
-          doc_type: 'Purchase Order',
-          vendor: 'Ionian Foods',
-          confidence_level: 'High',
-          result: {
-            invoice_number: 'PO-4500130222',
-            invoice_date: '2026-01-18',
-            supplier_name: 'Ionian Foods',
-            subtotal: 680.00,
-            tax: 59.90,
-            total: 739.90,
-            currency: 'EUR',
-            confidence: 0.95,
-            data: {
-              invoice_number: 'PO-4500130222',
-              supplier_name: 'Ionian Foods',
-              total: 739.90,
-              currency: 'EUR',
-              type: 'Purchase Order',
-              confidence_level: 'High',
-            },
-          },
-        },
-        {
-          id: '07777777-7777-4777-8777-777777777777',
-          filename: 'INV-2026-0330.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 280000,
-          status: 'completed',
-          stage: 'Completed',
-          progress: 1.0,
-          page_count: 1,
-          pages_done: 1,
-          error: null,
-          created_at: '2026-01-18T10:45:00Z',
-          updated_at: '2026-01-18T10:45:50Z',
-          doc_type: 'Invoice',
-          vendor: 'Ionian Foods',
-          confidence_level: 'High',
-          result: {
-            invoice_number: 'INV-2026-0330',
-            invoice_date: '2026-01-18',
-            supplier_name: 'Ionian Foods',
-            subtotal: 1000.00,
-            tax: 120.00,
-            total: 1120.00,
-            currency: 'EUR',
-            confidence: 0.97,
-            data: {
-              invoice_number: 'INV-2026-0330',
-              supplier_name: 'Ionian Foods',
-              total: 1120.00,
-              currency: 'EUR',
-              type: 'Invoice',
-              confidence_level: 'High',
-            },
-          },
-        },
-        {
-          id: '18888888-8888-4888-8888-888888888888',
-          filename: 'INV-2026-0417.pdf',
-          file_type: 'application/pdf',
-          size_bytes: 350000,
-          status: 'needs_review',
-          stage: 'Awaiting Human Review',
-          progress: 1.0,
-          page_count: 4,
-          pages_done: 4,
-          error: null,
-          created_at: '2026-05-28T14:00:00Z',
-          updated_at: '2026-05-28T14:02:10Z',
-          doc_type: 'Invoice',
-          vendor: 'Nexora Solutions LLC',
-          confidence_level: 'High',
-          result: {
-            invoice_number: 'INV-2026-0417',
-            invoice_date: '2026-05-28',
-            supplier_name: 'Nexora Solutions LLC',
-            subtotal: 13900.00,
-            tax: 1146.75,
-            total: 15046.75,
-            currency: 'USD',
-            confidence: 0.95,
-            needs_review: true,
-            data: {
-              invoice_number: 'INV-2026-0417',
-              supplier_name: 'Nexora Solutions LLC',
-              invoice_date: 'May 28, 2026',
-              due_date: 'Jun 27, 2026',
-              subtotal: 13900.00,
-              tax: 1146.75,
-              total: 15046.75,
-              currency: 'USD',
-              type: 'Invoice',
-              confidence_level: 'High',
-              field_confidence: {
-                invoice_number: 0.95,
-                invoice_date: 0.98,
-                due_date: 0.96,
-                subtotal: 0.96,
-                tax: 0.93,
-                total: 0.95,
-              },
-              line_items: [
-                { description: 'Cloud Infrastructure Upgrade', quantity: 2, unit_price: 5000.00, amount: 10000.00, confidence: 94 },
-                { description: 'Data Integration & ETL', quantity: 1, unit_price: 2400.00, amount: 2400.00, confidence: 92 },
-                { description: 'Security Assessment', quantity: 1, unit_price: 1500.00, amount: 1500.00, confidence: 94 },
-              ],
-            },
-          },
-        },
-      ];
-
-      for (const d of SEED_DOCS) {
-        await this.supabase.saveDocument({
-          id: d.id,
-          filename: d.filename,
-          file_type: d.file_type,
-          size_bytes: d.size_bytes,
-          status: d.status,
-          stage: d.stage,
-          progress: d.progress,
-          page_count: d.page_count,
-          pages_done: d.pages_done,
-          error: d.error,
-          created_at: d.created_at,
-          updated_at: d.updated_at,
-        });
-
-        await this.supabase.saveExtractionResult({
-          document_id: d.id,
-          invoice_number: d.result.invoice_number,
-          invoice_date: d.result.invoice_date,
-          supplier_name: d.result.supplier_name,
-          customer_name: 'DocuIntel Demo Enterprise',
-          subtotal: d.result.subtotal,
-          tax: d.result.tax,
-          total: d.result.total,
-          currency: d.result.currency,
-          data: d.result.data,
-          overall_confidence: d.result.confidence,
-          needs_review: Boolean(d.result.needs_review),
-        });
-
-        // Seed audit history
-        this.addHistory(d.id, {
-          action: 'Document Ingestion',
-          message: `File ${d.filename} ingested, indexed, and validated against accounting rules.`,
-          session_time: '00:01:20',
-        });
-      }
-      this.logger.log(`Seeded ${SEED_DOCS.length} reference documents successfully.`);
-    } catch (err: any) {
-      this.logger.warn(`Could not seed demo documents: ${err.message}`);
-    }
+    this.logger.log('Demo document auto-seeding is disabled (zero dummy data).');
+    return;
   }
 
   async uploadAndProcess(files: Express.Multer.File[]) {
@@ -860,68 +512,72 @@ export class DocumentsService implements OnModuleInit {
   // Cross-Document Reconciliation Engine (Pillar 2, Image 2)
   // ---------------------------------------------------------------------------
   async reconcileSources(sourceDocIds: string[] = []) {
-    const discrepancies = [
-      {
-        id: 'DISC-01',
-        transaction: 'DHL Express',
-        ledger_amount: 118.60,
-        bank_amount: 138.60,
-        ledger_date: 'May 14, 2026',
-        bank_date: 'May 15, 2026',
-        flag_type: 'UNMATCHED',
-        difference: 20.00,
-        notes: 'Price discrepancy of $20.00 between company ledger and bank settlement.',
-      },
-      {
-        id: 'DISC-02',
-        transaction: 'FedEx Freight',
-        ledger_amount: 76.80,
-        bank_amount: 76.80,
-        ledger_date: 'May 04, 2026',
-        bank_date: 'May 04, 2026',
-        flag_type: 'DUPLICATE',
-        difference: 76.80,
-        notes: 'FedEx payment booked twice in internal ledger for single bank transaction.',
-      },
-      {
-        id: 'DISC-03',
-        transaction: 'AWS Cloud Services',
-        ledger_amount: 1450.00,
-        bank_amount: 1450.00,
-        ledger_date: 'May 31, 2026',
-        bank_date: 'Jun 01, 2026',
-        flag_type: 'TIMING DIFF',
-        difference: 0.00,
-        notes: 'End-of-month timing shift across billing cut-off date.',
-      },
-      {
-        id: 'DISC-04',
-        transaction: 'Stripe Payout',
-        ledger_amount: null,
-        bank_amount: 242.00,
-        ledger_date: '—',
-        bank_date: 'May 22, 2026',
-        flag_type: 'MISSING RECEIPT',
-        difference: 242.00,
-        notes: 'Bank debit recorded without corresponding receipt/invoice voucher.',
-      },
-    ];
+    const allDocs = await this.supabase.listDocuments();
+    const targetDocs = sourceDocIds.length > 0
+      ? allDocs.filter((d: any) => sourceDocIds.includes(d.id))
+      : allDocs;
 
-    const loadedSources = [
-      { id: 'SRC-1', filename: 'sample_ledger.xlsx', type: 'Company ledger', count: 30, status: 'loaded' },
-      { id: 'SRC-2', filename: 'chase_statement_may.pdf', type: 'Chase Business Checking', count: 30, status: 'loaded' },
-      { id: 'SRC-3', filename: '20260504_FedEx.jpg', type: 'Receipt — FedEx shipment', count: 1, status: 'loaded' },
-      { id: 'SRC-4', filename: '20260522_Cafe_Nero.jpg', type: 'Receipt — Cafe Nero', count: 1, status: 'loaded' },
-    ];
+    if (!targetDocs.length) {
+      return {
+        summary: {
+          total_sources: 0,
+          total_transactions: 0,
+          matched_count: 0,
+          flagged_count: 0,
+          unexplained_difference: 0,
+          period: 'Current Period',
+        },
+        sources: [],
+        discrepancies: [],
+      };
+    }
+
+    const loadedSources = targetDocs.map((d: any) => {
+      const isExcel = d.filename.toLowerCase().endsWith('.xlsx') || d.filename.toLowerCase().endsWith('.csv');
+      const isPO = d.filename.toUpperCase().startsWith('PO');
+      const docType = isExcel ? 'Spreadsheet Ledger' : isPO ? 'Purchase Order' : 'Invoice';
+      return {
+        id: d.id,
+        filename: d.filename,
+        type: docType,
+        count: 1,
+        status: 'loaded',
+      };
+    });
+
+    const discrepancies: any[] = [];
+    let matchedCount = 0;
+    let unexplainedDiff = 0;
+
+    for (const d of targetDocs) {
+      const summary = d.summary || {};
+      if (d.status === 'needs_review' || d.needs_review) {
+        const diff = Math.abs((summary.total ?? 0) - ((summary.subtotal ?? 0) + (summary.tax ?? 0)));
+        unexplainedDiff += diff;
+        discrepancies.push({
+          id: `DISC-${d.id.slice(0, 6)}`,
+          transaction: summary.supplier_name || d.filename,
+          ledger_amount: summary.total ?? 0,
+          bank_amount: (summary.total ?? 0) - (diff > 0 ? diff : 0),
+          ledger_date: summary.invoice_date || d.created_at?.slice(0, 10),
+          bank_date: summary.invoice_date || d.created_at?.slice(0, 10),
+          flag_type: diff > 0 ? 'UNMATCHED' : 'TIMING DIFF',
+          difference: Math.round(diff * 100) / 100,
+          notes: `Discrepancy detected on ${d.filename}.`,
+        });
+      } else if (d.status === 'completed') {
+        matchedCount++;
+      }
+    }
 
     return {
       summary: {
         total_sources: loadedSources.length,
-        total_transactions: 30,
-        matched_count: 27,
-        flagged_count: 4,
-        unexplained_difference: 262.80,
-        period: 'May/June 2026',
+        total_transactions: loadedSources.length,
+        matched_count: matchedCount,
+        flagged_count: discrepancies.length,
+        unexplained_difference: Math.round(unexplainedDiff * 100) / 100,
+        period: new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
       },
       sources: loadedSources,
       discrepancies,
