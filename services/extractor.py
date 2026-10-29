@@ -234,3 +234,4 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
     extracted["issues"] = issues
 
     return extracted
+

@@ -392,3 +392,4 @@ def search_rag(
     provider: str = Query("auto", description="LLM provider"),
 ):
     return rag.rag_query(q, limit=5)
+
