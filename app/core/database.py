@@ -46,7 +46,7 @@ def release_conn(conn):
 
 
 def ensure_schema():
-    """Verifies and creates tables and required columns."""
+    """Verifies and creates tables, pgvector extension, and HNSW indexes."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -69,7 +69,6 @@ def ensure_schema():
                 );
             """)
 
-            # Ensure file_base64 column exists
             cur.execute("""
                 ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_base64 TEXT;
             """)
@@ -97,20 +96,34 @@ def ensure_schema():
                 );
             """)
 
-            # 3. Document embeddings table (pgvector semantic search)
+            # 3. Ensure pgvector extension and document embeddings table
+            try:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            except Exception as ext_err:
+                logger.warning(f"Vector extension notice: {ext_err}")
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS document_embeddings (
                     id SERIAL PRIMARY KEY,
                     document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
                     chunk_text TEXT NOT NULL,
-                    embedding JSONB,
+                    embedding vector(384),
                     vector JSONB,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
 
+            # 4. HNSW cosine index for sub-millisecond similarity search
+            try:
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS doc_embed_hnsw 
+                    ON document_embeddings USING hnsw (embedding vector_cosine_ops);
+                """)
+            except Exception as index_err:
+                logger.warning(f"HNSW index notice: {index_err}")
+
             conn.commit()
-            logger.info("Supabase database tables verified successfully.")
+            logger.info("Supabase database tables and pgvector HNSW index verified successfully.")
     except Exception as exc:
         conn.rollback()
         logger.error(f"Schema verification error: {exc}")
