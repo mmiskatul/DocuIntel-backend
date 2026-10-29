@@ -63,29 +63,34 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "reviewed": False,
         })
 
-        # Step 4: Semantic Vector Indexing
-        save_document({
-            "id": doc_id,
-            "status": "processing",
-            "stage": "Vector Indexing",
-            "progress": 0.85,
-        })
-        index_document_chunks(doc_id, text)
+        # Step 4: Semantic Vector Indexing (Only if all okay; deferred if needs review)
+        if not needs_review:
+            save_document({
+                "id": doc_id,
+                "status": "processing",
+                "stage": "Vector Indexing",
+                "progress": 0.85,
+            })
+            index_document_chunks(doc_id, text)
+            stage_name = "Completed & Vectorized"
+        else:
+            stage_name = "Needs Review (Variance Detected)"
+            logger.info(f"Document {doc_id} has discrepancies (needs_review=True). Holding vector indexing until reviewer approval.")
 
         # Step 5: Mark Completed
         final_status = "needs_review" if needs_review else "completed"
         save_document({
             "id": doc_id,
             "status": final_status,
-            "stage": "Completed",
+            "stage": stage_name,
             "progress": 1.0,
             "page_count": page_count,
             "pages_done": page_count,
         })
         add_history(
             doc_id,
-            "Flagged for Review" if needs_review else "Processing Completed",
-            f"Pipeline finished cleanly. Status: {final_status}.",
+            "Flagged for Review" if needs_review else "Processing Completed & Vectorized",
+            f"Pipeline finished. Status: {final_status}. Vector DB: {'Stored' if not needs_review else 'Pending approval'}.",
         )
         logger.info(f"Document {doc_id} processed ({final_status}).")
 

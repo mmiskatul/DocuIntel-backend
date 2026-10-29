@@ -105,3 +105,4 @@ def ocr_image(image_bytes: bytes) -> str:
     except Exception as exc:
         logger.error(f"Vision OCR error: {exc}")
         raise ValueError(f"Optical text recognition failed: {exc}")
+
