@@ -1,4 +1,4 @@
-"""Document vector embeddings repository (RAG storage and retrieval)."""
+"""Document vector embeddings repository (storage and semantic retrieval)."""
 import json
 import logging
 from typing import Any, Dict, List

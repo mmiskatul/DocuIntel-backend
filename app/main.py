@@ -1,4 +1,4 @@
-"""DocuIntel FastAPI Application Entrypoint."""
+"""DocuIntel Application Entrypoint."""
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -14,15 +14,15 @@ logger = logging.getLogger("docuintel.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting DocuIntel FastAPI Backend...")
+    logger.info("Starting DocuIntel Backend...")
     database.init_db()
     yield
-    logger.info("Stopping DocuIntel FastAPI Backend...")
+    logger.info("Stopping DocuIntel Backend...")
 
 
 app = FastAPI(
     title="DocuIntel Document Intelligence API",
-    description="Clean, modular FastAPI Backend with AI-Powered OCR, LangChain RAG Vector Search, and Supabase PostgreSQL.",
+    description="Clean, modular FastAPI Backend with Intelligent OCR, Semantic Vector Search, and Supabase PostgreSQL.",
     version="2.1.0",
     lifespan=lifespan,
 )
@@ -48,7 +48,7 @@ app.include_router(api_v1_router)
 def root():
     return {
         "service": "DocuIntel Document Intelligence API",
-        "status": "online",
+        "status": "active",
         "version": "2.1.0",
         "docs": "/docs",
         "health": "/health",

@@ -13,8 +13,8 @@ def health():
     return {
         "status": "ok",
         "backend": "online",
-        "service": "DocuIntel FastAPI Backend",
+        "service": "DocuIntel Backend",
         "version": "2.0.0",
-        "ai_engine": "OpenAI GPT-4o-mini + PyMuPDF",
+        "engine": "Document Intelligence Engine",
         "database": "connected" if database.db_pool else "connecting",
     }

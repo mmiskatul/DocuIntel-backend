@@ -54,7 +54,7 @@ EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
         (
-            "You are an expert Document Intelligence AI using LangChain. "
+            "You are an expert Document Intelligence Assistant. "
             "Analyze the document text and extract structured fields strictly according to the schema. "
             "Rules:\n"
             "1. Extract ONLY facts present in the text. DO NOT invent or assume values.\n"

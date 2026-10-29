@@ -25,11 +25,11 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             f"Extracted {len(text)} characters across {page_count} page(s).",
         )
 
-        # Step 2: AI Information Extraction
+        # Step 2: Information Extraction
         save_document({
             "id": doc_id,
             "status": "processing",
-            "stage": "AI Information Extraction",
+            "stage": "Information Extraction",
             "progress": 0.6,
             "page_count": page_count,
             "pages_done": page_count,
@@ -41,8 +41,8 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
 
         add_history(
             doc_id,
-            "AI Extraction Completed",
-            f"Extracted fields via GPT-4o-mini. Title/Vendor: {extracted.get('supplier_name') or extracted.get('document_title') or 'Document'}.",
+            "Extraction Completed",
+            f"Extracted structured fields. Title/Vendor: {extracted.get('supplier_name') or extracted.get('document_title') or 'Document'}.",
         )
 
         # Step 3: Persist Extraction Results
@@ -63,7 +63,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "reviewed": False,
         })
 
-        # Step 4: RAG Vector Indexing
+        # Step 4: Semantic Vector Indexing
         save_document({
             "id": doc_id,
             "status": "processing",
@@ -98,4 +98,3 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "error": str(exc),
             "progress": 1.0,
         })
-        add_history(doc_id, "Processing Failed", str(exc))

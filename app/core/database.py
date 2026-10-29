@@ -97,7 +97,7 @@ def ensure_schema():
                 );
             """)
 
-            # 3. Document embeddings table (pgvector RAG)
+            # 3. Document embeddings table (pgvector semantic search)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS document_embeddings (
                     id SERIAL PRIMARY KEY,

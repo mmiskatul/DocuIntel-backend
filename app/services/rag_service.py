@@ -1,4 +1,4 @@
-"""RAG (Retrieval-Augmented Generation) & Semantic Vector Search Service powered by LangChain."""
+"""Question Answering & Semantic Vector Search Service."""
 import logging
 import time
 from typing import Any, Dict, List
@@ -11,35 +11,35 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import OPENAI_API_KEY
 from app.models.embedding_repo import save_document_embedding, search_document_embeddings
 
-logger = logging.getLogger("docuintel.services.rag")
+logger = logging.getLogger("docuintel.services.search")
 
-# LangChain Text Splitter for semantic chunking
+# Text Splitter for semantic chunking
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=800,
     chunk_overlap=100,
     separators=["\n\n", "\n", ". ", " ", ""],
 )
 
-# LangChain OpenAI Embeddings (384-dimensional pgvector compatibility)
+# OpenAI Embeddings (384-dimensional pgvector compatibility)
 embeddings_model = OpenAIEmbeddings(
     model="text-embedding-3-small",
     dimensions=384,
     api_key=OPENAI_API_KEY,
 )
 
-# LangChain Chat Model for RAG Synthesis
-rag_llm = ChatOpenAI(
+# Chat Model for Answer Synthesis
+answer_model = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0.2,
     api_key=OPENAI_API_KEY,
 )
 
-# LangChain RAG Prompt Template
-RAG_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+# Prompt Template
+PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
     (
         "system",
         (
-            "You are a professional Document Intelligence AI Assistant powered by LangChain. "
+            "You are a professional Document Intelligence Assistant. "
             "Answer the user query concisely and accurately based ONLY on the provided context snippets. "
             "Cite the source document filenames whenever stating facts or amounts."
         ),
@@ -50,39 +50,36 @@ RAG_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
     ),
 ])
 
-# LangChain LCEL Runnable Chain
-rag_chain = RAG_PROMPT_TEMPLATE | rag_llm | StrOutputParser()
+answer_chain = PROMPT_TEMPLATE | answer_model | StrOutputParser()
 
 
 def generate_embedding(text: str) -> List[float]:
-    """Generates 384-dimensional vector embedding using LangChain OpenAIEmbeddings."""
+    """Generates 384-dimensional vector embedding."""
     try:
         return embeddings_model.embed_query(text[:8000])
     except Exception as exc:
-        logger.error(f"LangChain embedding error: {exc}")
+        logger.error(f"Embedding generation error: {exc}")
         return [0.0] * 384
 
 
 def index_document_chunks(doc_id: str, full_text: str):
-    """Splits document text using LangChain RecursiveCharacterTextSplitter and indexes embeddings."""
+    """Splits document text and indexes embeddings."""
     if not full_text or len(full_text.strip()) < 10:
         return
 
-    # Use LangChain Text Splitter
     chunks = text_splitter.split_text(full_text)
     if not chunks:
         chunks = [full_text[:1000]]
 
-    # Index top 10 chunks
     for chunk in chunks[:10]:
         vector = generate_embedding(chunk)
         save_document_embedding(doc_id, chunk, vector)
 
-    logger.info(f"LangChain indexed {len(chunks[:10])} vector chunks for document {doc_id}.")
+    logger.info(f"Indexed {len(chunks[:10])} vector chunks for document {doc_id}.")
 
 
 def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Retrieves top semantic matches and runs LangChain LCEL RAG chain for grounded answers."""
+    """Retrieves top semantic matches and runs chain for grounded answers."""
     start_time = time.time()
     query_vector = generate_embedding(query)
     matches = search_document_embeddings(query_vector, limit=limit)
@@ -93,13 +90,12 @@ def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
         return {
             "query": query,
             "answer": "No indexed documents found matching your search query. Please upload your invoices or PDFs first.",
-            "provider_used": "LangChain + GPT-4o-mini",
+            "provider_used": "DocuIntel Intelligence Engine",
             "latency_ms": elapsed_ms,
             "citations": [],
             "hits": [],
         }
 
-    # Convert retrieved chunks to LangChain Document instances
     langchain_docs: List[Document] = []
     citations: List[Dict[str, Any]] = []
     hits: List[Dict[str, Any]] = []
@@ -152,27 +148,25 @@ def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
             },
         })
 
-    # Format context for LangChain chain
     context_str = "\n\n".join(
         f"[{i+1}] File: {d.metadata['filename']}\nSnippet: {d.page_content}"
         for i, d in enumerate(langchain_docs)
     )
 
     try:
-        # Execute LangChain LCEL RAG Chain
-        answer = rag_chain.invoke({
+        answer = answer_chain.invoke({
             "context": context_str,
             "question": query,
         })
     except Exception as exc:
-        logger.error(f"LangChain RAG chain invocation error: {exc}")
+        logger.error(f"Answer synthesis error: {exc}")
         answer = f"Found {len(matches)} matching document(s). Direct synthesis failed: {exc}"
 
     elapsed_ms = max(int((time.time() - start_time) * 1000), 45)
     return {
         "query": query,
         "answer": answer,
-        "provider_used": "LangChain + GPT-4o-mini",
+        "provider_used": "DocuIntel Intelligence Engine",
         "latency_ms": elapsed_ms,
         "citations": citations,
         "hits": hits,

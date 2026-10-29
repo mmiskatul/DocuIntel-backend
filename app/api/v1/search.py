@@ -1,11 +1,11 @@
-"""Search and RAG query controller."""
+"""Search and Question Answering query controller."""
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query
 from app.models.document_repo import list_documents
 from app.models.embedding_repo import search_document_embeddings
 from app.services.rag_service import generate_embedding, rag_search_and_answer
 
-router = APIRouter(prefix="/search", tags=["Search & RAG"])
+router = APIRouter(prefix="/search", tags=["Search & Intelligence"])
 
 
 @router.get("")
@@ -72,9 +72,10 @@ def search(
 
 
 @router.get("/rag")
-def search_rag(
-    q: str = Query(..., description="User question for RAG answer synthesis"),
-    provider: str = Query("auto", description="LLM provider"),
+@router.get("/answer")
+def search_answer(
+    q: str = Query(..., description="User question for document answer synthesis"),
+    provider: str = Query("auto", description="Synthesis engine"),
 ):
     """Answers user question using retrieved semantic document context with citations."""
     return rag_search_and_answer(q, limit=5)

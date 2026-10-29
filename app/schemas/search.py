@@ -1,4 +1,4 @@
-"""Search and RAG query Pydantic schemas."""
+"""Search and Question Answering Pydantic schemas."""
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
@@ -18,7 +18,11 @@ class Citation(BaseModel):
     similarity: float
 
 
-class RAGResponse(BaseModel):
+class AnswerResponse(BaseModel):
     answer: str
     citations: List[Citation]
     hits: List[Dict[str, Any]]
+
+
+# Backwards compatibility alias
+RAGResponse = AnswerResponse
