@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core import database
-from app.api.router import api_router
+from app.api.router import api_router, api_v1_router
 from app.api.v1.health import router as health_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="DocuIntel Document Intelligence API",
-    description="Clean, modular FastAPI Backend with AI-Powered OCR, RAG Vector Search, and Supabase PostgreSQL.",
+    description="Clean, modular FastAPI Backend with AI-Powered OCR, LangChain RAG Vector Search, and Supabase PostgreSQL.",
     version="2.1.0",
     lifespan=lifespan,
 )
@@ -39,8 +39,9 @@ app.add_middleware(
 # Mount Health check at root & /api
 app.include_router(health_router)
 
-# Mount all /api/v1 routes
+# Mount both /api and /api/v1 routes
 app.include_router(api_router)
+app.include_router(api_v1_router)
 
 
 @app.get("/")
