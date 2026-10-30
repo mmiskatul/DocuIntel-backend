@@ -19,6 +19,7 @@ from app.models.document_repo import (
 )
 from app.models.result_repo import get_extraction_results, save_extraction_result
 from app.schemas.document import BatchApproveRequest, ApproveRequest
+from app.config import ALLOWED_EXTENSIONS, MAX_FILES_PER_REQUEST, MAX_UPLOAD_MB
 from app.services.pipeline import run_document_pipeline
 
 logger = logging.getLogger("docuintel.api.documents")
@@ -67,10 +68,19 @@ async def upload_documents(
     Persists file bytes, returns HTTP 202 Accepted instantly, and executes time-consuming
     OCR, multimodal AI extraction, and vector indexing asynchronously in the background.
     """
+    if len(files) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(status_code=413, detail=f"Too many files; maximum is {MAX_FILES_PER_REQUEST} per request.")
+
     results = []
     for file in files:
-        doc_id = str(uuid.uuid4())
+        name = (file.filename or "").replace("\\", "/").split("/")[-1]
+        if not name.lower().endswith(ALLOWED_EXTENSIONS):
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: '{name}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
+        file.filename = name
         content = await file.read()
+        if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"'{name}' exceeds the {MAX_UPLOAD_MB} MB limit.")
+        doc_id = str(uuid.uuid4())
         b64_content = base64.b64encode(content).decode("utf-8")
         mime = file.content_type or ("application/pdf" if file.filename.lower().endswith(".pdf") else "application/octet-stream")
 

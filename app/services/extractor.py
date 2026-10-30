@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from app.config import OPENAI_API_KEY
+from app.config import OPENAI_API_KEY, MAX_OCR_PAGES, EXTRACT_HEAD_CHARS, EXTRACT_TAIL_CHARS
 from app.services.pdf_parser import parse_pdf
 from app.services.vision_ocr import ocr_image
 
@@ -172,7 +172,7 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
             try:
                 doc = pymupdf.open(stream=file_bytes, filetype="pdf")
                 scanned_pages = []
-                max_pages = min(len(doc), 15)
+                max_pages = min(len(doc), MAX_OCR_PAGES)
                 for page_idx in range(max_pages):
                     pix = doc[page_idx].get_pixmap(dpi=150)
                     page_ocr = ocr_image(pix.tobytes("png"))
@@ -188,7 +188,7 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
                     raise ValueError(f"Unable to parse or OCR scanned PDF '{filename}': {ocr_err}")
 
     # 2. Image Handling
-    elif lower.endswith((".png", ".jpg", ".jpeg", ".tiff", ".webp")):
+    elif lower.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp")):
         text = ocr_image(file_bytes)
         page_count = 1
 
@@ -271,6 +271,15 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
 # LangChain Structured Extraction Execution with Strict Format Validation
 # ==============================================================================
 
+def _llm_window(text: str) -> str:
+    """Head + tail of long documents: headers/parties are at the start, totals at the end."""
+    limit = EXTRACT_HEAD_CHARS + EXTRACT_TAIL_CHARS
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:EXTRACT_HEAD_CHARS]}\n\n[... {omitted} characters omitted ...]\n\n{text[-EXTRACT_TAIL_CHARS:]}"
+
+
 def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
     """
     Invokes LangChain extraction chain to extract:
@@ -282,29 +291,13 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
         # Run LangChain LCEL Extraction Chain
         result: DocumentExtractionSchema = extraction_chain.invoke({
             "filename": filename,
-            "text": text[:4500],
+            "text": _llm_window(text),
         })
         extracted = result.model_dump()
     except Exception as exc:
         logger.error(f"LangChain structured extraction error: {exc}")
-        lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 2]
-        extracted = {
-            "document_title": lines[0] if lines else filename,
-            "document_type": "Document",
-            "is_supported_format": True,
-            "rejection_reason": None,
-            "supplier_name": lines[0] if lines else None,
-            "customer_name": None,
-            "invoice_number": None,
-            "invoice_date": None,
-            "due_date": None,
-            "subtotal": None,
-            "tax": None,
-            "total": None,
-            "currency": "USD",
-            "line_items": [],
-            "summary": "Document processed cleanly without inventing values.",
-        }
+        # Never fabricate values when the model fails: surface the failure so the job can be retried.
+        raise RuntimeError(f"AI extraction failed: {exc}") from exc
 
     issues = []
     lower_fn = filename.lower()

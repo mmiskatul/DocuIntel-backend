@@ -8,7 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.config import OPENAI_API_KEY
+from app.config import OPENAI_API_KEY, MAX_INDEX_CHUNKS
 from app.models.embedding_repo import save_document_embedding, search_document_embeddings
 
 logger = logging.getLogger("docuintel.services.search")
@@ -71,11 +71,12 @@ def index_document_chunks(doc_id: str, full_text: str):
     if not chunks:
         chunks = [full_text[:1000]]
 
-    for chunk in chunks[:10]:
-        vector = generate_embedding(chunk)
+    chunks = chunks[:MAX_INDEX_CHUNKS]
+    vectors = embeddings_model.embed_documents(chunks)  # batched API calls
+    for chunk, vector in zip(chunks, vectors):
         save_document_embedding(doc_id, chunk, vector)
 
-    logger.info(f"Indexed {len(chunks[:10])} vector chunks for document {doc_id}.")
+    logger.info(f"Indexed {len(chunks)} vector chunks for document {doc_id}.")
 
 
 def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:

@@ -5,16 +5,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PORT = int(os.getenv("PORT", "8000"))
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://USER:PASSWORD@HOST:5432/postgres",
-)
+
+# No default: credentials must come from the environment (.env locally, secrets manager in prod).
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 XAI_API_KEY = os.getenv("XAI_API_KEY", "")
 CORS_ORIGINS = [
     origin.strip()
-    for origin in os.getenv("CORS_ORIGINS", "*").split(",")
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
     if origin.strip()
 ]
+
+# Upload limits
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
+MAX_FILES_PER_REQUEST = int(os.getenv("MAX_FILES_PER_REQUEST", "50"))
+ALLOWED_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".xlsx", ".xls", ".csv")
+
+# Large-document handling
+MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "100"))
+EXTRACT_HEAD_CHARS = int(os.getenv("EXTRACT_HEAD_CHARS", "6000"))
+EXTRACT_TAIL_CHARS = int(os.getenv("EXTRACT_TAIL_CHARS", "4000"))
+MAX_INDEX_CHUNKS = int(os.getenv("MAX_INDEX_CHUNKS", "200"))

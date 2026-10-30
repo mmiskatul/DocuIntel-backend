@@ -14,7 +14,7 @@ def init_db():
     """Initializes threaded PostgreSQL connection pool and verifies schema."""
     global db_pool
     if not DATABASE_URL:
-        logger.warning("No DATABASE_URL configured.")
+        logger.error("DATABASE_URL is not set; configure it in backend/.env (see .env.example).")
         return
 
     try:
@@ -109,7 +109,7 @@ def ensure_schema():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS processing_history (
                     id SERIAL PRIMARY KEY,
-                    document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+                    document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
                     action TEXT NOT NULL,
                     message TEXT NOT NULL,
                     stage TEXT,
@@ -122,6 +122,14 @@ def ensure_schema():
                 CREATE INDEX IF NOT EXISTS idx_processing_history_doc 
                 ON processing_history(document_id, created_at ASC);
             """)
+
+            for ddl in (
+                "CREATE INDEX IF NOT EXISTS idx_results_document ON extraction_results(document_id);",
+                "CREATE INDEX IF NOT EXISTS idx_results_invoice ON extraction_results(invoice_number, supplier_name);",
+                "CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status, created_at DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_document ON document_embeddings(document_id);",
+            ):
+                cur.execute(ddl)
 
             # 4. Ensure pgvector extension and document embeddings table (semantic search)
             try:
