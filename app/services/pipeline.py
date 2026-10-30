@@ -3,13 +3,14 @@ import logging
 from app.models.document_repo import save_document, add_history
 from app.models.result_repo import save_extraction_result
 from app.services.extractor import extract_raw_text, extract_structured_fields
+from app.services.validator import validate_document_data
 from app.services.rag_service import index_document_chunks
 
 logger = logging.getLogger("docuintel.services.pipeline")
 
 
 def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_type: str):
-    """Executes end-to-end extraction, validation, and vector indexing."""
+    """Executes end-to-end extraction, validation rules, and conditional vector indexing."""
     try:
         # Step 1: Parsing & Text Extraction
         save_document({
@@ -25,7 +26,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             f"Extracted {len(text)} characters across {page_count} page(s).",
         )
 
-        # Step 2: Information Extraction & Format Validation
+        # Step 2: Information Extraction & Format Classification
         save_document({
             "id": doc_id,
             "status": "processing",
@@ -35,7 +36,17 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "pages_done": page_count,
         })
         extracted = extract_structured_fields(text, filename)
-        issues = extracted.get("issues", [])
+
+        # Step 3: Run Full Enterprise Validation Rules
+        # (1. Missing fields, 2. Incorrect numeric values, 3. Duplicate invoices, 4. Inconsistencies)
+        issues, needs_review, review_stage = validate_document_data(
+            extracted=extracted,
+            doc_id=doc_id,
+            filename=filename,
+            check_duplicates=True,
+        )
+        extracted["issues"] = issues
+
         is_supported = extracted.get("is_supported_format", True)
         format_issues = [i for i in issues if i.get("code") == "FORMAT_REJECTED" or i.get("severity") == "fatal"]
 
@@ -76,16 +87,14 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             )
             return
 
-        has_errors = any(i.get("severity") == "error" for i in issues)
-        needs_review = has_errors
-
         add_history(
             doc_id,
             "Extraction Completed",
             f"Extracted structured fields. Title/Vendor: {extracted.get('supplier_name') or extracted.get('document_title') or 'Document'}.",
         )
 
-        # Step 3: Persist Extraction Results
+        # Step 4: Persist Extraction Results
+        overall_conf = 0.82 if needs_review else 0.98
         save_extraction_result({
             "document_id": doc_id,
             "invoice_number": extracted.get("invoice_number"),
@@ -97,13 +106,13 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "total": extracted.get("total"),
             "currency": extracted.get("currency", "USD"),
             "data": extracted,
-            "confidence": {"overall": 0.96},
-            "overall_confidence": 0.85 if needs_review else 0.96,
+            "confidence": {"overall": overall_conf},
+            "overall_confidence": overall_conf,
             "needs_review": needs_review,
             "reviewed": False,
         })
 
-        # Step 4: Semantic Vector Indexing (Only if all okay; deferred if needs review)
+        # Step 5: Semantic Vector Indexing (Only if all checks pass; held if needs review)
         if not needs_review:
             save_document({
                 "id": doc_id,
@@ -114,10 +123,10 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             index_document_chunks(doc_id, text)
             stage_name = "Completed & Vectorized"
         else:
-            stage_name = "Needs Review (Variance Detected)"
-            logger.info(f"Document {doc_id} has discrepancies (needs_review=True). Holding vector indexing until reviewer approval.")
+            stage_name = review_stage or "Needs Review (Validation Flagged)"
+            logger.info(f"Document {doc_id} requires manual review ({stage_name}). Holding vector indexing until reviewer approval.")
 
-        # Step 5: Mark Completed
+        # Step 6: Mark Final Status
         final_status = "needs_review" if needs_review else "completed"
         save_document({
             "id": doc_id,
@@ -127,11 +136,22 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "page_count": page_count,
             "pages_done": page_count,
         })
-        add_history(
-            doc_id,
-            "Flagged for Review" if needs_review else "Processing Completed & Vectorized",
-            f"Pipeline finished. Status: {final_status}. Vector DB: {'Stored' if not needs_review else 'Pending approval'}.",
-        )
+
+        # Record audit log
+        if needs_review:
+            error_codes = [i["code"] for i in issues if i.get("severity") == "error"]
+            add_history(
+                doc_id,
+                "Flagged for Manual Review",
+                f"Validation rules flagged: {', '.join(error_codes)}. Vector DB storage held pending approval.",
+            )
+        else:
+            add_history(
+                doc_id,
+                "Processing Completed & Vectorized",
+                "All validation rules passed cleanly (0 errors). Chunks stored in vector database.",
+            )
+
         logger.info(f"Document {doc_id} processed ({final_status}).")
 
     except Exception as exc:
@@ -145,6 +165,6 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
         })
         add_history(
             doc_id,
-            "Processing Failed",
-            f"Error: {exc}",
+            "Pipeline Failed",
+            f"Processing failed: {str(exc)}",
         )

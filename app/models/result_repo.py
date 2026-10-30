@@ -87,3 +87,47 @@ def update_result_correction(res_id: int, corrections: Dict[str, Any], reviewer:
             return dict(updated) if updated else None
     finally:
         release_conn(conn)
+
+
+def find_duplicate_invoice(doc_id: str, invoice_number: Optional[str], supplier_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Checks if another document with the same invoice number already exists in the database."""
+    if not invoice_number or not str(invoice_number).strip():
+        return None
+
+    clean_inv = str(invoice_number).strip()
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if supplier_name and str(supplier_name).strip():
+                clean_sup = str(supplier_name).strip()
+                query = """
+                    SELECT er.document_id, er.invoice_number, er.supplier_name, er.total, d.filename, d.status
+                    FROM extraction_results er
+                    JOIN documents d ON er.document_id = d.id
+                    WHERE er.document_id != %s
+                      AND LOWER(TRIM(er.invoice_number)) = LOWER(%s)
+                      AND (
+                        LOWER(TRIM(er.supplier_name)) = LOWER(%s)
+                        OR er.supplier_name ILIKE %s
+                      )
+                    LIMIT 1;
+                """
+                cur.execute(query, (doc_id, clean_inv, clean_sup, f"%{clean_sup}%"))
+            else:
+                query = """
+                    SELECT er.document_id, er.invoice_number, er.supplier_name, er.total, d.filename, d.status
+                    FROM extraction_results er
+                    JOIN documents d ON er.document_id = d.id
+                    WHERE er.document_id != %s
+                      AND LOWER(TRIM(er.invoice_number)) = LOWER(%s)
+                    LIMIT 1;
+                """
+                cur.execute(query, (doc_id, clean_inv))
+
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except Exception as exc:
+        logger.warning(f"find_duplicate_invoice query error: {exc}")
+        return None
+    finally:
+        release_conn(conn)
