@@ -1,5 +1,6 @@
 """Extraction results repository."""
 import json
+from decimal import Decimal
 import logging
 from typing import Any, Dict, List, Optional
 from psycopg2.extras import RealDictCursor
@@ -116,12 +117,9 @@ def get_extraction_results(doc_id: str) -> List[Dict[str, Any]]:
             cur.execute("SELECT * FROM extraction_results WHERE document_id = %s ORDER BY id ASC;", (doc_id,))
             rows = [dict(r) for r in cur.fetchall()]
             for r in rows:
-                if isinstance(r.get("subtotal"), (int, float)):
-                    r["subtotal"] = float(r["subtotal"])
-                if isinstance(r.get("tax"), (int, float)):
-                    r["tax"] = float(r["tax"])
-                if isinstance(r.get("total"), (int, float)):
-                    r["total"] = float(r["total"])
+                for field in ("subtotal", "tax", "total"):
+                    if isinstance(r.get(field), (int, float, Decimal)):
+                        r[field] = float(r[field])
             return rows
     finally:
         release_conn(conn)
@@ -170,6 +168,7 @@ def find_duplicate_invoice(doc_id: str, invoice_number: Optional[str], supplier_
                     FROM extraction_results er
                     JOIN documents d ON er.document_id = d.id
                     WHERE er.document_id != %s
+                      AND COALESCE(er.data->>'source', '') <> 'ledger'
                       AND LOWER(TRIM(er.invoice_number)) = LOWER(%s)
                       AND (
                         LOWER(TRIM(er.supplier_name)) = LOWER(%s)
@@ -184,6 +183,7 @@ def find_duplicate_invoice(doc_id: str, invoice_number: Optional[str], supplier_
                     FROM extraction_results er
                     JOIN documents d ON er.document_id = d.id
                     WHERE er.document_id != %s
+                      AND COALESCE(er.data->>'source', '') <> 'ledger'
                       AND LOWER(TRIM(er.invoice_number)) = LOWER(%s)
                     LIMIT 1;
                 """
@@ -194,5 +194,27 @@ def find_duplicate_invoice(doc_id: str, invoice_number: Optional[str], supplier_
     except Exception as exc:
         logger.warning(f"find_duplicate_invoice query error: {exc}")
         return None
+    finally:
+        release_conn(conn)
+
+
+def append_result_issue(result_id: int, issue: Dict[str, Any], needs_review: bool) -> bool:
+    """Adds a validation issue to a result row (also mirrored in data.issues) and optionally flags it for review."""
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT validation_errors, data, needs_review FROM extraction_results WHERE id = %s;", (result_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            errors = [e for e in (row["validation_errors"] or []) if e.get("code") != issue.get("code")] + [issue]
+            data = row["data"] or {}
+            data["issues"] = errors
+            cur.execute(
+                "UPDATE extraction_results SET validation_errors = %s, data = %s, needs_review = %s, reviewed = CASE WHEN %s THEN FALSE ELSE reviewed END WHERE id = %s;",
+                (json.dumps(errors), json.dumps(data), bool(row["needs_review"] or needs_review), needs_review, result_id),
+            )
+            conn.commit()
+            return True
     finally:
         release_conn(conn)

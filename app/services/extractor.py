@@ -192,68 +192,12 @@ def extract_raw_text(file_bytes: bytes, filename: str) -> Tuple[str, int]:
         text = ocr_image(file_bytes)
         page_count = 1
 
-    # 3. CSV Handling
-    elif lower.endswith(".csv"):
-        for encoding in ("utf-8", "utf-16", "latin-1", "cp1252"):
-            try:
-                text = file_bytes.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if not text:
-            raise ValueError(f"Corrupted or unreadable CSV file: unable to decode characters in '{filename}'.")
-        page_count = 1
-
-    # 4. Excel Handling
-    elif lower.endswith(".xlsx"):
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-            lines = []
-            for sheet_name in wb.sheetnames:
-                lines.append(f"=== Sheet: {sheet_name} ===")
-                ws = wb[sheet_name]
-                sheet_rows = []
-                for row in ws.iter_rows(values_only=True):
-                    row_vals = [str(c).strip() for c in row if c is not None and str(c).strip()]
-                    if row_vals:
-                        sheet_rows.append(" | ".join(row_vals))
-                if sheet_rows:
-                    lines.extend(sheet_rows)
-                else:
-                    lines.append("[Empty Sheet]")
-                lines.append("")
-
-            text = "\n".join(lines).strip()
-            page_count = max(1, len(wb.sheetnames))
-        except Exception as exc:
-            logger.error(f"Excel .xlsx parsing error: {exc}")
-            raise ValueError(f"Corrupted or invalid Excel (.xlsx) file: {exc}")
-
-    elif lower.endswith(".xls"):
-        try:
-            import xlrd
-            wb = xlrd.open_workbook(file_contents=file_bytes)
-            lines = []
-            for sheet_name in wb.sheet_names():
-                lines.append(f"=== Sheet: {sheet_name} ===")
-                ws = wb.sheet_by_name(sheet_name)
-                sheet_rows = []
-                for r_idx in range(ws.nrows):
-                    row_vals = [str(ws.cell_value(r_idx, c_idx)).strip() for c_idx in range(ws.ncols) if str(ws.cell_value(r_idx, c_idx)).strip()]
-                    if row_vals:
-                        sheet_rows.append(" | ".join(row_vals))
-                if sheet_rows:
-                    lines.extend(sheet_rows)
-                else:
-                    lines.append("[Empty Sheet]")
-                lines.append("")
-
-            text = "\n".join(lines).strip()
-            page_count = max(1, len(wb.sheet_names()))
-        except Exception as exc:
-            logger.error(f"Excel legacy .xls parsing error: {exc}")
-            raise ValueError(f"Corrupted or invalid legacy Excel (.xls) file: {exc}")
+    # 3. Spreadsheets & CSV (pandas: all sheets, column alignment preserved)
+    elif lower.endswith((".csv", ".xlsx", ".xls")):
+        from app.services.spreadsheet import read_sheets, sheets_to_text
+        sheets = read_sheets(file_bytes, filename)
+        text = sheets_to_text(sheets)
+        page_count = 1 if lower.endswith(".csv") else max(1, len(sheets))
 
     else:
         try:

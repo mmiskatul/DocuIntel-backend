@@ -7,6 +7,7 @@ from app.config import EXTRACTION_PARALLELISM, MAX_INVOICES_PER_DOCUMENT
 from app.models.document_repo import save_document, add_history
 from app.models.result_repo import delete_results_for_document, save_extraction_result
 from app.services.segmenter import split_invoice_segments
+from app.services.vision_ocr import get_ocr_meta, reset_ocr_meta
 from app.services.extractor import extract_raw_text, extract_structured_fields
 from app.services.validator import validate_document_data
 from app.services.rag_service import index_document_chunks
@@ -14,7 +15,29 @@ from app.services.rag_service import index_document_chunks
 logger = logging.getLogger("docuintel.services.pipeline")
 
 
-def _run_multi_invoice(doc_id: str, filename: str, text: str, segments: List[Dict[str, Any]], page_count: int):
+KEY_FIELDS = ("invoice_number", "invoice_date", "supplier_name", "total")
+
+
+def compute_confidence(extracted: Dict[str, Any], needs_review: bool, ocr_conf=None) -> float:
+    """Heuristic 0..1 score: share of key fields found, capped by real OCR confidence, reduced when flagged.
+    (Not a model probability; it is derived from measurable signals only.)"""
+    found = sum(1 for k in KEY_FIELDS if extracted.get(k) not in (None, ""))
+    score = 0.5 + 0.5 * found / len(KEY_FIELDS)
+    if ocr_conf is not None:
+        score = min(score, float(ocr_conf))
+    if needs_review:
+        score *= 0.85
+    return round(max(0.0, min(score, 1.0)), 2)
+
+
+def _ocr_issue():
+    return {"code": "LOW_OCR_QUALITY", "severity": "error", "field": "document",
+            "message": "The scan could not be read reliably (low OCR confidence or illegible text); verify the extracted values against the original.",
+            "details": {}}
+
+
+def _run_multi_invoice(doc_id: str, filename: str, text: str, segments: List[Dict[str, Any]], page_count: int, ocr: Dict[str, Any] = None):
+    ocr = ocr or {}
     """Processes a bundle PDF: one extraction + validation + result row per detected invoice."""
     n = len(segments)
     delete_results_for_document(doc_id)
@@ -30,16 +53,25 @@ def _run_multi_invoice(doc_id: str, filename: str, text: str, segments: List[Dic
             save_document({"id": doc_id, "status": "processing", "stage": f"Information Extraction ({i + 1}/{n})",
                            "progress": round(0.6 + 0.25 * (i + 1) / n, 2)})
 
+    items = [{"extracted": e, "text": seg["text"], "page_range": [seg["start_page"], seg["end_page"]]}
+             for seg, e in zip(segments, extracted_list)]
+    _persist_invoices(doc_id, filename, text, items, page_count, ocr)
+
+
+def _persist_invoices(doc_id: str, filename: str, text: str, items: List[Dict[str, Any]], page_count: int, ocr: Dict[str, Any]):
+    """Validates and stores one result row per invoice, then sets the document's final status."""
+    n = len(items)
     seen = set()
     any_review, saved = False, 0
     skipped = []
     first_reason = None
-    for seg, extracted in zip(segments, extracted_list):
-        issues, needs_review, _ = validate_document_data(extracted=extracted, doc_id=doc_id, filename=filename, check_duplicates=True)
+    for item in items:
+        extracted, seg_text = item["extracted"], item["text"]
+        issues, needs_review, _ = validate_document_data(extracted=extracted, doc_id=doc_id, filename=filename, check_duplicates=item.get("source") != "ledger")
         rejected = (not extracted.get("is_supported_format", True)) or any(
             i.get("code") == "FORMAT_REJECTED" or i.get("severity") == "fatal" for i in issues)
         if rejected:
-            skipped.append(f"pages {seg['start_page']}-{seg['end_page']}")
+            skipped.append(f"pages {item['page_range'][0]}-{item['page_range'][1]}" if item.get("page_range") else f"row {item.get('row')}")
             first_reason = first_reason or extracted.get("rejection_reason")
             continue
 
@@ -49,15 +81,17 @@ def _run_multi_invoice(doc_id: str, filename: str, text: str, segments: List[Dic
                            "message": f"Invoice #{extracted.get('invoice_number')} appears more than once in this document.", "details": {}})
             needs_review = True
         seen.add(key)
-        if "[illegible]" in seg["text"].lower():
-            issues.append({"code": "LOW_OCR_QUALITY", "severity": "error", "field": "document",
-                           "message": "Parts of this invoice were illegible to OCR; verify against the original.", "details": {}})
+        if "[illegible]" in seg_text.lower() or ocr.get("low_confidence"):
+            issues.append(_ocr_issue())
             needs_review = True
 
         extracted["issues"] = issues
-        extracted["page_range"] = [seg["start_page"], seg["end_page"]]
+        if item.get("page_range"):
+            extracted["page_range"] = item["page_range"]
+        if item.get("source"):
+            extracted["source"] = item["source"]
         extracted["segment_index"] = saved + 1
-        conf = 0.82 if needs_review else 0.98
+        conf = compute_confidence(extracted, needs_review, ocr.get("confidence"))
         save_extraction_result({
             "document_id": doc_id,
             "invoice_number": extracted.get("invoice_number"), "invoice_date": extracted.get("invoice_date"),
@@ -92,6 +126,24 @@ def _run_multi_invoice(doc_id: str, filename: str, text: str, segments: List[Dic
                    "progress": 1.0, "page_count": page_count, "pages_done": page_count})
 
 
+
+def _run_ledger(doc_id: str, filename: str, text: str, records: List[Dict[str, Any]], page_count: int):
+    """A spreadsheet whose rows are invoices: structured straight from the cells (no LLM), then validated like any invoice."""
+    delete_results_for_document(doc_id)
+    add_history(doc_id, "Invoice Ledger Detected", f"Spreadsheet parsed as an invoice table with {len(records)} row(s); extracted deterministically.")
+    items = []
+    for rec in records:
+        extracted = {
+            "document_title": filename, "document_type": "Invoice Ledger Row", "is_supported_format": True, "rejection_reason": None,
+            "invoice_number": rec.get("invoice_number"), "invoice_date": rec.get("invoice_date"), "supplier_name": rec.get("supplier_name"),
+            "customer_name": rec.get("customer_name"), "subtotal": rec.get("subtotal"), "tax": rec.get("tax"), "total": rec.get("total"),
+            "currency": rec.get("currency"), "line_items": [], "due_date": None,
+            "summary": f"Ledger row {rec.get('row')} of sheet '{rec.get('sheet')}'.",
+        }
+        items.append({"extracted": extracted, "text": "", "row": rec.get("row"), "source": "ledger"})
+    _persist_invoices(doc_id, filename, text, items, page_count, {})
+
+
 def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_type: str):
     """Executes end-to-end extraction, validation rules, and conditional vector indexing."""
     try:
@@ -102,7 +154,18 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "stage": "OCR & Parsing",
             "progress": 0.3,
         })
+        reset_ocr_meta()
         text, page_count = extract_raw_text(file_bytes, filename)
+        ocr = get_ocr_meta()
+        if filename.lower().endswith((".xlsx", ".xls", ".csv")):
+            from app.services.spreadsheet import detect_ledger, read_sheets
+            records = detect_ledger(read_sheets(file_bytes, filename))
+            if records:
+                save_document({"id": doc_id, "status": "processing", "stage": "Validating Ledger Rows", "progress": 0.6,
+                               "page_count": page_count, "pages_done": page_count, "extracted_text": text})
+                add_history(doc_id, "OCR Parsing Completed", f"Extracted {len(text)} characters across {page_count} sheet(s).")
+                _run_ledger(doc_id, filename, text, records, page_count)
+                return
         add_history(
             doc_id,
             "OCR Parsing Completed",
@@ -122,7 +185,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
         delete_results_for_document(doc_id)  # drop stale rows from earlier runs (re-processing)
         segments = split_invoice_segments(text, MAX_INVOICES_PER_DOCUMENT)
         if len(segments) > 1:
-            _run_multi_invoice(doc_id, filename, text, segments, page_count)
+            _run_multi_invoice(doc_id, filename, text, segments, page_count, ocr)
             return
 
         extracted = extract_structured_fields(text, filename)
@@ -135,14 +198,8 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             filename=filename,
             check_duplicates=True,
         )
-        if "[illegible]" in text.lower():
-            issues.append({
-                "code": "LOW_OCR_QUALITY",
-                "severity": "error",
-                "field": "document",
-                "message": "Parts of the document were illegible to OCR; extracted values must be verified against the original.",
-                "details": {},
-            })
+        if "[illegible]" in text.lower() or ocr.get("low_confidence"):
+            issues.append(_ocr_issue())
             if not needs_review:
                 needs_review, review_stage = True, "Needs Review (Low OCR Quality)"
         extracted["issues"] = issues
@@ -195,7 +252,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
         )
 
         # Step 4: Persist Extraction Results
-        overall_conf = 0.82 if needs_review else 0.98
+        overall_conf = compute_confidence(extracted, needs_review, ocr.get("confidence"))
         save_extraction_result({
             "document_id": doc_id,
             "invoice_number": extracted.get("invoice_number"),

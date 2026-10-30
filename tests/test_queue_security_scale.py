@@ -89,7 +89,7 @@ def test_recover_stuck_jobs_requeues_interrupted_documents(monkeypatch):
         "file_base64": base64.b64encode(b"a,b\n1,2").decode(),
     })
     try:
-        assert job_queue.recover_stuck_jobs() >= 1
+        assert job_queue.recover_stuck_jobs(stale_seconds=0) >= 1
         assert any(a[0] == doc_id and a[2] == b"a,b\n1,2" for a in queued)
         assert get_document(doc_id)["status"] == "queued"
     finally:

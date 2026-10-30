@@ -4,12 +4,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import threading
 from app.config import API_KEY, CORS_ORIGINS
 from app.core import database
 from app.api.router import api_router, api_v1_router
 from app.api.v1.health import router as health_router
-from app.services.job_queue import recover_stuck_jobs
+from app.services.job_queue import start_supervisor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("docuintel.main")
@@ -21,7 +20,7 @@ async def lifespan(app: FastAPI):
     database.init_db()
     if API_KEY == "":
         logger.warning("API_KEY is not set: the API is unauthenticated (development mode).")
-    threading.Thread(target=recover_stuck_jobs, daemon=True, name="job-recovery").start()
+    start_supervisor()
     yield
     logger.info("Stopping DocuIntel Backend...")
 

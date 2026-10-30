@@ -5,7 +5,8 @@ import logging
 from PIL import Image, ImageOps, ImageEnhance, UnidentifiedImageError
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from app.config import OPENAI_API_KEY
+import threading
+from app.config import OPENAI_API_KEY, OCR_ENGINE, OCR_MIN_CONFIDENCE
 
 logger = logging.getLogger("docuintel.services.vision_ocr")
 
@@ -78,7 +79,64 @@ def preprocess_image(image_bytes: bytes) -> bytes:
         return image_bytes
 
 
+_meta = threading.local()
+
+
+def reset_ocr_meta():
+    _meta.value = {"engine": None, "confidence": None, "low_confidence": False, "pages": 0}
+
+
+def get_ocr_meta() -> dict:
+    """OCR facts about the current thread's last extraction (engine used, min confidence, low-confidence flag)."""
+    if not hasattr(_meta, "value"):
+        reset_ocr_meta()
+    return dict(_meta.value)
+
+
+def _record(engine: str, confidence, low: bool):
+    if not hasattr(_meta, "value"):
+        reset_ocr_meta()
+    m = _meta.value
+    m["pages"] += 1
+    m["engine"] = engine if m["engine"] in (None, engine) else "mixed"
+    if confidence is not None:
+        m["confidence"] = confidence if m["confidence"] is None else min(m["confidence"], confidence)
+    m["low_confidence"] = m["low_confidence"] or low
+
+
 def ocr_image(image_bytes: bytes) -> str:
+    """Local OCR first (fast, private, with real confidence); vision-LLM fallback when the local read is unsure."""
+    if not image_bytes:
+        raise ValueError("Image file is empty (0 bytes).")
+    if OCR_ENGINE == "vision":
+        text = ocr_image_vision(image_bytes)
+        _record("vision", None, False)
+        return text
+
+    local_text, local_conf = "", 0.0
+    try:
+        from app.services.local_ocr import ocr_local
+        local_text, local_conf = ocr_local(preprocess_image(image_bytes))
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning(f"Local OCR unavailable ({exc}); using vision OCR.")
+        if OCR_ENGINE == "local":
+            raise ValueError(f"Local OCR failed: {exc}")
+
+    if OCR_ENGINE == "local":
+        _record("local", local_conf, local_conf < OCR_MIN_CONFIDENCE)
+        return local_text
+    if local_text.strip() and local_conf >= OCR_MIN_CONFIDENCE:
+        _record("local", local_conf, False)
+        return local_text
+    logger.info(f"Local OCR confidence {local_conf:.2f} < {OCR_MIN_CONFIDENCE}; falling back to vision OCR.")
+    text = ocr_image_vision(image_bytes)
+    _record("vision", local_conf, True)  # the local engine could not read it reliably, so flag for review
+    return text
+
+
+def ocr_image_vision(image_bytes: bytes) -> str:
     """Transcribes text, numbers, labels, and tables accurately even from poor-quality images."""
     if not image_bytes or len(image_bytes) == 0:
         raise ValueError("Image file is empty (0 bytes).")

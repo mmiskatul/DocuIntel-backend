@@ -1,5 +1,6 @@
 """Document repository for PostgreSQL interactions and in-memory file caching."""
 import datetime
+import uuid
 import logging
 from typing import Any, Dict, List, Optional
 from psycopg2.extras import RealDictCursor
@@ -77,6 +78,10 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        uuid.UUID(str(doc_id))  # ids are UUIDs; anything else cannot exist (and would make PostgreSQL raise)
+    except ValueError:
+        return None
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:

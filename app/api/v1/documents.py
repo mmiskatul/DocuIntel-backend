@@ -20,6 +20,8 @@ from app.models.document_repo import (
 from app.models.result_repo import get_extraction_results, save_extraction_result
 from app.schemas.document import BatchApproveRequest, ApproveRequest
 from app.config import ALLOWED_EXTENSIONS, MAX_FILES_PER_REQUEST, MAX_UPLOAD_MB
+from app.models.result_repo import append_result_issue
+from app.services.cross_verify import cross_verify
 from app.services.job_queue import enqueue
 
 logger = logging.getLogger("docuintel.api.documents")
@@ -36,6 +38,13 @@ class ReconcileRequest(BaseModel):
     tax: Optional[float] = None
     total: Optional[float] = None
     action: str = "apply_sum"  # "apply_sum" | "override" | "manual"
+    reviewer: str = "reviewer@docuintel.com"
+
+
+class CrossVerifyRequest(BaseModel):
+    left_document_id: str
+    right_document_id: str
+    flag_mismatches: bool = True  # mark mismatching invoices (in both documents) for manual review
     reviewer: str = "reviewer@docuintel.com"
 
 
@@ -119,6 +128,62 @@ async def upload_documents(
         })
 
     return results
+
+
+# ==============================================================================
+# 1b. CROSS-VERIFICATION (PDF vs PDF, PDF vs Excel/CSV ledger)
+# ==============================================================================
+
+@router.post("/cross-verify")
+def cross_verify_documents(body: CrossVerifyRequest):
+    """
+    Matches the invoices of two processed documents by invoice number and compares supplier, customer, date,
+    currency and amounts. Reports matches, mismatches and invoices present in only one document.
+    """
+    if body.left_document_id == body.right_document_id:
+        raise HTTPException(status_code=400, detail="Choose two different documents to cross-verify.")
+    docs = {}
+    rows = {}
+    for side, doc_id in (("left", body.left_document_id), ("right", body.right_document_id)):
+        d = get_document(doc_id)
+        if not d:
+            raise HTTPException(status_code=404, detail=f"Document {doc_id} not found.")
+        if d.get("status") in ("queued", "processing", "failed", "rejected"):
+            raise HTTPException(status_code=409, detail=f"'{d['filename']}' is {d['status']}; only processed documents can be cross-verified.")
+        docs[side], rows[side] = d, get_extraction_results(doc_id)
+        if not rows[side]:
+            raise HTTPException(status_code=409, detail=f"'{d['filename']}' has no extracted invoices.")
+
+    report = cross_verify(rows["left"], rows["right"])
+    report["left_document"] = {"id": docs["left"]["id"], "filename": docs["left"]["filename"]}
+    report["right_document"] = {"id": docs["right"]["id"], "filename": docs["right"]["filename"]}
+
+    flagged = 0
+    if body.flag_mismatches:
+        for m in report["mismatched"]:
+            blocking = any(x["severity"] == "error" for x in m["differences"])
+            fields = ", ".join(x["field"] for x in m["differences"])
+            for side, rid, other in (("left", m["left_result_id"], docs["right"]), ("right", m["right_result_id"], docs["left"])):
+                issue = {
+                    "code": "CROSS_VERIFY_MISMATCH", "severity": "error" if blocking else "warning", "field": fields,
+                    "message": f"Invoice {m['invoice_number']} differs from '{other['filename']}' in: {fields}.",
+                    "details": {"other_document_id": other["id"], "differences": m["differences"]},
+                }
+                if append_result_issue(rid, issue, needs_review=blocking):
+                    flagged += 1
+                    if blocking and docs[side].get("status") == "completed":
+                        save_document({"id": docs[side]["id"], "status": "needs_review", "stage": "Needs Review (Cross-Verification Mismatch)"})
+                        docs[side]["status"] = "needs_review"
+    report["flagged_results"] = flagged
+    summary = report["summary"]
+    for side, other in (("left", "right"), ("right", "left")):
+        add_history(
+            docs[side]["id"], "Cross-Verified",
+            f"Compared with '{docs[other]['filename']}': {summary['matched']} matched, {summary['mismatched']} mismatched, "
+            f"{summary['only_in_left'] if side == 'left' else summary['only_in_right']} only in this document.",
+            body.reviewer,
+        )
+    return report
 
 
 # ==============================================================================

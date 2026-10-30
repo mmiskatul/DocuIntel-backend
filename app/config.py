@@ -34,3 +34,9 @@ API_KEY = os.getenv("API_KEY", "")  # when set, every /api request must send it 
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
 MAX_INVOICES_PER_DOCUMENT = int(os.getenv("MAX_INVOICES_PER_DOCUMENT", "500"))
 EXTRACTION_PARALLELISM = int(os.getenv("EXTRACTION_PARALLELISM", "4"))
+
+# OCR: "auto" = local RapidOCR first, vision-LLM fallback when unsure; "local" = never call the LLM; "vision" = LLM only
+OCR_ENGINE = os.getenv("OCR_ENGINE", "auto").lower()
+OCR_MIN_CONFIDENCE = float(os.getenv("OCR_MIN_CONFIDENCE", "0.80"))
+STALE_JOB_SECONDS = int(os.getenv("STALE_JOB_SECONDS", "120"))
+RECOVERY_INTERVAL_SECONDS = int(os.getenv("RECOVERY_INTERVAL_SECONDS", "60"))
