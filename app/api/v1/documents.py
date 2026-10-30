@@ -14,6 +14,7 @@ from app.models.document_repo import (
     delete_all_documents,
     cache_file,
     get_cached_file,
+    get_document_file,
     add_history,
     get_history,
 )
@@ -246,8 +247,8 @@ def stream_document_file(doc_id: str):
             headers={"Content-Disposition": f'inline; filename="{cached["filename"]}"'},
         )
 
-    doc = get_document(doc_id)
-    if not doc or not doc.get("file_base64"):
+    stored = get_document_file(doc_id)
+    if not stored:
         return Response(
             content="""
                 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400" style="background:#f8fafc; font-family:sans-serif;">
@@ -259,8 +260,9 @@ def stream_document_file(doc_id: str):
             media_type="image/svg+xml",
         )
 
-    file_bytes = base64.b64decode(doc["file_base64"])
-    mime = doc.get("file_type") or ("application/pdf" if doc["filename"].lower().endswith(".pdf") else "application/octet-stream")
+    file_bytes = stored["bytes"]
+    mime = stored["mimetype"]
+    doc = {"filename": stored["filename"]}
     return Response(
         content=file_bytes,
         media_type=mime,
@@ -542,7 +544,7 @@ def reprocess_document(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found.")
 
     cached = get_cached_file(doc_id)
-    content = cached["bytes"] if cached else (base64.b64decode(doc["file_base64"]) if doc.get("file_base64") else b"")
+    content = cached["bytes"] if cached else ((get_document_file(doc_id) or {}).get("bytes") or b"")
     if not content:
         raise HTTPException(status_code=400, detail="Document binary not available for re-processing.")
 
@@ -579,7 +581,7 @@ def reprocess_all_failed_documents():
     for doc in failed_docs:
         doc_id = doc["id"]
         cached = get_cached_file(doc_id)
-        content = cached["bytes"] if cached else (base64.b64decode(doc["file_base64"]) if doc.get("file_base64") else b"")
+        content = cached["bytes"] if cached else ((get_document_file(doc_id) or {}).get("bytes") or b"")
         if content:
             mime = doc.get("file_type") or "application/pdf"
             save_document({

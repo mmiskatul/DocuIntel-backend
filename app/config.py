@@ -9,9 +9,6 @@ PORT = int(os.getenv("PORT", "8000"))
 # No default: credentials must come from the environment (.env locally, secrets manager in prod).
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-XAI_API_KEY = os.getenv("XAI_API_KEY", "")
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

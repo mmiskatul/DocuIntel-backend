@@ -28,8 +28,9 @@ embeddings_model = OpenAIEmbeddings(
 )
 
 # Chat Model for Answer Synthesis
+ANSWER_MODEL_NAME = "gpt-4o-mini"
 answer_model = ChatOpenAI(
-    model="gpt-4o-mini",
+    model=ANSWER_MODEL_NAME,
     temperature=0.2,
     api_key=OPENAI_API_KEY,
 )
@@ -86,69 +87,47 @@ def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
     query_vector = generate_embedding(query)
     matches = search_document_embeddings(query_vector, limit=limit)
 
-    elapsed_ms = max(int((time.time() - start_time) * 1000), 25)
+    elapsed_ms = int((time.time() - start_time) * 1000)
 
     if not matches:
         return {
             "query": query,
             "answer": "No indexed documents found matching your search query. Please upload your invoices or PDFs first.",
-            "provider_used": "DocuIntel Intelligence Engine",
+            "provider_used": ANSWER_MODEL_NAME,
             "latency_ms": elapsed_ms,
             "citations": [],
             "hits": [],
         }
 
+    from app.models.document_repo import get_document  # local import: avoids a circular import at module load
+
     langchain_docs: List[Document] = []
     citations: List[Dict[str, Any]] = []
     hits: List[Dict[str, Any]] = []
+    doc_cache: Dict[str, Any] = {}
 
     for m in matches:
-        doc = Document(
+        langchain_docs.append(Document(
             page_content=m["chunk_text"],
             metadata={"filename": m["filename"], "document_id": m["document_id"]},
-        )
-        langchain_docs.append(doc)
+        ))
         citations.append({
             "document_id": m["document_id"],
             "filename": m["filename"],
             "supplier": m.get("supplier_name"),
             "total": m.get("total"),
-            "currency": m.get("currency") or "USD",
+            "currency": m.get("currency"),
             "similarity": m["similarity"],
             "snippet": m["chunk_text"][:220],
         })
-        hits.append({
-            "document_id": m["document_id"],
-            "page": 1,
-            "score": m["similarity"],
-            "snippet": m["chunk_text"][:250],
-            "match": "semantic",
-            "document": {
-                "id": m["document_id"],
-                "filename": m["filename"],
-                "file_type": "application/pdf",
-                "size_bytes": 0,
-                "status": m.get("status") or "completed",
-                "stage": "Completed",
-                "progress": 1.0,
-                "page_count": 1,
-                "pages_done": 1,
-                "error": None,
-                "attempts": 1,
-                "processing_ms": 120,
-                "created_at": m.get("created_at") or "",
-                "updated_at": m.get("created_at") or "",
-                "invoice_count": 1,
-                "needs_review": False,
-                "summary": {
-                    "invoice_number": m.get("invoice_number"),
-                    "supplier_name": m.get("supplier_name"),
-                    "total": m.get("total"),
-                    "currency": m.get("currency") or "USD",
-                    "invoice_date": m.get("invoice_date"),
-                },
-            },
-        })
+        key = str(m["document_id"])
+        if key not in doc_cache:
+            doc_cache[key] = get_document(key)
+        if doc_cache[key]:
+            hits.append({
+                "document_id": key, "page": 1, "score": m["similarity"],
+                "snippet": m["chunk_text"][:250].replace(chr(10), " "), "match": "semantic", "document": doc_cache[key],
+            })
 
     context_str = "\n\n".join(
         f"[{i+1}] File: {d.metadata['filename']}\nSnippet: {d.page_content}"
@@ -164,11 +143,11 @@ def rag_search_and_answer(query: str, limit: int = 5) -> Dict[str, Any]:
         logger.error(f"Answer synthesis error: {exc}")
         answer = f"Found {len(matches)} matching document(s). Direct synthesis failed: {exc}"
 
-    elapsed_ms = max(int((time.time() - start_time) * 1000), 45)
+    elapsed_ms = int((time.time() - start_time) * 1000)
     return {
         "query": query,
         "answer": answer,
-        "provider_used": "DocuIntel Intelligence Engine",
+        "provider_used": ANSWER_MODEL_NAME,
         "latency_ms": elapsed_ms,
         "citations": citations,
         "hits": hits,

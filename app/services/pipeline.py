@@ -127,6 +127,13 @@ def _persist_invoices(doc_id: str, filename: str, text: str, items: List[Dict[st
 
 
 
+def _ledger_row_text(rec: Dict[str, Any]) -> str:
+    """Readable text for one ledger row (shown in the UI's text panel)."""
+    keys = ("invoice_number", "invoice_date", "supplier_name", "customer_name", "subtotal", "tax", "total", "currency")
+    body = chr(10).join(f"{k.replace('_', ' ').title()}: {rec[k]}" for k in keys if rec.get(k) not in (None, ""))
+    return f"=== Sheet: {rec.get('sheet')} (row {rec.get('row')}) ==={chr(10)}{body}"
+
+
 def _run_ledger(doc_id: str, filename: str, text: str, records: List[Dict[str, Any]], page_count: int):
     """A spreadsheet whose rows are invoices: structured straight from the cells (no LLM), then validated like any invoice."""
     delete_results_for_document(doc_id)
@@ -139,6 +146,7 @@ def _run_ledger(doc_id: str, filename: str, text: str, records: List[Dict[str, A
             "customer_name": rec.get("customer_name"), "subtotal": rec.get("subtotal"), "tax": rec.get("tax"), "total": rec.get("total"),
             "currency": rec.get("currency"), "line_items": [], "due_date": None,
             "summary": f"Ledger row {rec.get('row')} of sheet '{rec.get('sheet')}'.",
+            "raw_text": _ledger_row_text(rec),
         }
         items.append({"extracted": extracted, "text": "", "row": rec.get("row"), "source": "ledger"})
     _persist_invoices(doc_id, filename, text, items, page_count, {})

@@ -6,11 +6,11 @@ Re-run with `python tests/evaluate_benchmark.py` and `pytest tests` (needs `DATA
 
 ## 1. Automated test suite
 
-`pytest tests` → **60 passed, 0 failed** (about 6 minutes; the tests call the real database and OpenAI).
+`pytest tests` → **66 passed, 0 failed** (about 7 minutes; the tests call the real database and OpenAI).
 Covers: PDF/CSV/XLSX/XLS/image parsing, local + LLM OCR routing, 1000-page PDF, corrupt and empty files, AI extraction
 (incl. LLM-outage behaviour), validation rules, REST endpoints, upload limits, API-key auth, durable job recovery
 (including three concurrent recovery sweeps that never claim a job twice), multi-invoice splitting, per-invoice corrections,
-spreadsheet ledgers, **PDF-vs-PDF and PDF-vs-Excel cross-verification**, database + pgvector search, evaluation benchmark.
+spreadsheet ledgers, **PDF-vs-PDF and PDF-vs-Excel cross-verification**, database + pgvector search, hybrid search with real metadata, slim list payloads, evaluation benchmark.
 
 ## 2. Labeled benchmark (`tests/evaluate_benchmark.py`)
 
@@ -60,6 +60,14 @@ the ledger/PDF pair is correctly **not** treated as a duplicate.
 Uploaded via `POST /api/documents` on the Next.js proxy with API-key auth enabled; all 8 settled in 71 s (3 parallel workers).
 Good PDF/CSV/XLSX invoices extracted correctly; wrong-total and missing-field invoices flagged without inventing values; corrupt and empty files failed with specific stages;
 a re-uploaded invoice flagged as duplicate. Crash recovery: the server was killed mid-job and the job completed after restart.
+
+## 5b. Full walkthrough through the web proxy (34 scripted checks, 34 passed)
+
+Run against a local backend with API-key auth on and the real database/OpenAI, via the Next.js `/api` proxy (the same path the browser uses):
+upload of 11 mixed files in one request (digital PDF, wrong-arithmetic PDF, missing-field PDF, 3-invoice bundle, CSV ledger, 2-sheet XLSX, clean scan, blurry scan, corrupt PDF, empty CSV, non-invoice résumé),
+status/progress, per-type extraction, validation flags, per-invoice correction, single and bulk reprocessing, original-file download, history, stats, malformed-id handling,
+keyword / semantic / hybrid search, AI answer with citations, PDF-vs-ledger and PDF-vs-PDF cross-verification, refusal to cross-verify unprocessed documents, and cleanup.
+The list endpoint returned 33 documents in 21 KB (it previously returned every stored file and full text).
 
 ## 6. Scale check
 

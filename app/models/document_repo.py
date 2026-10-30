@@ -8,8 +8,38 @@ from app.core.database import get_conn, release_conn
 
 logger = logging.getLogger("docuintel.models.document")
 
+# Columns returned to API clients. The stored file (file_base64) and the full text are deliberately excluded:
+# they can be megabytes per document and the UI polls these queries every couple of seconds.
+_PUBLIC_COLUMNS = ["id", "filename", "file_type", "size_bytes", "status", "stage", "progress", "page_count", "pages_done", "error", "created_at", "updated_at"]
+_TERMINAL = ("completed", "needs_review", "failed", "rejected")
+
 _file_cache: Dict[str, Dict[str, Any]] = {}
 _history_store: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _add_timing(doc: Dict[str, Any]) -> None:
+    """processing_ms = time from upload to the last update, for finished documents."""
+    c, u = doc.get("created_at"), doc.get("updated_at")
+    doc["processing_ms"] = int((u - c).total_seconds() * 1000) if doc.get("status") in _TERMINAL and c and u else None
+
+
+def get_document_file(doc_id: str) -> Optional[Dict[str, Any]]:
+    """Returns {bytes, mimetype, filename} for the stored original, or None."""
+    import base64
+    try:
+        uuid.UUID(str(doc_id))
+    except ValueError:
+        return None
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT filename, file_type, file_base64 FROM documents WHERE id = %s;", (doc_id,))
+            row = cur.fetchone()
+            if not row or not row.get("file_base64"):
+                return None
+            return {"bytes": base64.b64decode(row["file_base64"]), "mimetype": row.get("file_type") or "application/octet-stream", "filename": row["filename"]}
+    finally:
+        release_conn(conn)
 
 
 def cache_file(doc_id: str, content: bytes, mimetype: str, filename: str):
@@ -85,16 +115,19 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM documents WHERE id = %s;", (doc_id,))
+            cur.execute(f"SELECT {', '.join(_PUBLIC_COLUMNS)} FROM documents WHERE id = %s;", (doc_id,))
             res = cur.fetchone()
             if not res:
                 return None
             doc = dict(res)
+            _add_timing(doc)
             cur.execute("SELECT * FROM extraction_results WHERE document_id = %s ORDER BY id DESC LIMIT 1;", (doc_id,))
             r = cur.fetchone()
-            doc["invoice_count"] = 1 if r else 0
-            doc["needs_review"] = r.get("needs_review", False) if r else False
-            doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else (0.82 if doc.get("status") == "needs_review" else 0.96)
+            cur.execute("SELECT count(*) AS n, bool_or(needs_review AND NOT reviewed) AS pending FROM extraction_results WHERE document_id = %s;", (doc_id,))
+            agg = cur.fetchone()
+            doc["invoice_count"] = int(agg["n"] or 0)
+            doc["needs_review"] = bool(agg["pending"]) if agg["n"] else False
+            doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else None
             doc["summary"] = {
                 "invoice_number": r.get("invoice_number") if r else None,
                 "supplier_name": r.get("supplier_name") if r else None,
@@ -120,26 +153,24 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                 conditions.append("d.status = %s")
                 params.append(status.lower())
             if q and q.strip():
-                clean_q = f"%{q.strip()}%"
-                conditions.append("""(
-                    d.filename ILIKE %s 
-                    OR CAST(d.id AS text) ILIKE %s 
-                    OR d.extracted_text ILIKE %s
-                    OR EXISTS (
-                        SELECT 1 FROM extraction_results er 
-                        WHERE er.document_id = d.id 
-                          AND (
-                              er.supplier_name ILIKE %s 
-                              OR er.invoice_number ILIKE %s 
-                              OR er.customer_name ILIKE %s
-                          )
-                    )
-                )""")
-                params.extend([clean_q, clean_q, clean_q, clean_q, clean_q, clean_q])
+                # Every word must match somewhere (filename, id, text, or any extracted party/number): AND across words, OR across fields
+                for term in q.split()[:8]:
+                    like = f"%{term}%"
+                    conditions.append("""(
+                        d.filename ILIKE %s
+                        OR CAST(d.id AS text) ILIKE %s
+                        OR d.extracted_text ILIKE %s
+                        OR EXISTS (
+                            SELECT 1 FROM extraction_results er
+                            WHERE er.document_id = d.id
+                              AND (er.supplier_name ILIKE %s OR er.invoice_number ILIKE %s OR er.customer_name ILIKE %s)
+                        )
+                    )""")
+                    params.extend([like] * 6)
 
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
-                SELECT d.* FROM documents d
+                SELECT {", ".join("d." + c for c in _PUBLIC_COLUMNS)} FROM documents d
                 {where_clause}
                 ORDER BY d.created_at DESC
                 LIMIT %s OFFSET %s;
@@ -149,6 +180,7 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
             docs = [dict(r) for r in cur.fetchall()]
 
             for doc in docs:
+                _add_timing(doc)
                 cur.execute("SELECT * FROM extraction_results WHERE document_id = %s ORDER BY id DESC LIMIT 1;", (doc["id"],))
                 r = cur.fetchone()
                 doc["invoice_count"] = 1 if r else 0
