@@ -50,7 +50,7 @@ def ensure_schema():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            # 1. Documents table
+            # 1. Documents table (metadata & extracted text)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY,
@@ -64,6 +64,7 @@ def ensure_schema():
                     pages_done INT DEFAULT 0,
                     error TEXT,
                     file_base64 TEXT,
+                    extracted_text TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
@@ -72,8 +73,11 @@ def ensure_schema():
             cur.execute("""
                 ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_base64 TEXT;
             """)
+            cur.execute("""
+                ALTER TABLE documents ADD COLUMN IF NOT EXISTS extracted_text TEXT;
+            """)
 
-            # 2. Extraction results table
+            # 2. Extraction results table (structured results & validation errors)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS extraction_results (
                     id SERIAL PRIMARY KEY,
@@ -92,11 +96,34 @@ def ensure_schema():
                     overall_confidence FLOAT DEFAULT 0.95,
                     needs_review BOOLEAN DEFAULT FALSE,
                     reviewed BOOLEAN DEFAULT FALSE,
+                    validation_errors JSONB,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
 
-            # 3. Ensure pgvector extension and document embeddings table
+            cur.execute("""
+                ALTER TABLE extraction_results ADD COLUMN IF NOT EXISTS validation_errors JSONB;
+            """)
+
+            # 3. Processing history table (audit trail & status lineage)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS processing_history (
+                    id SERIAL PRIMARY KEY,
+                    document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+                    action TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    stage TEXT,
+                    reviewer TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_processing_history_doc 
+                ON processing_history(document_id, created_at ASC);
+            """)
+
+            # 4. Ensure pgvector extension and document embeddings table (semantic search)
             try:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             except Exception as ext_err:

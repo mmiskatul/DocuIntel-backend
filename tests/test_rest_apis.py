@@ -181,3 +181,4 @@ def test_rest_api_search():
     response = client.get("/api/v1/search?q=invoice&mode=keyword")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+

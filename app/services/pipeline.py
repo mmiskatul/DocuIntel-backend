@@ -34,6 +34,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "progress": 0.6,
             "page_count": page_count,
             "pages_done": page_count,
+            "extracted_text": text,
         })
         extracted = extract_structured_fields(text, filename)
 
@@ -79,6 +80,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
                 "overall_confidence": 0.0,
                 "needs_review": False,
                 "reviewed": False,
+                "validation_errors": issues,
             })
             add_history(
                 doc_id,
@@ -110,6 +112,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "overall_confidence": overall_conf,
             "needs_review": needs_review,
             "reviewed": False,
+            "validation_errors": issues,
         })
 
         # Step 5: Semantic Vector Indexing (Only if all checks pass; held if needs review)

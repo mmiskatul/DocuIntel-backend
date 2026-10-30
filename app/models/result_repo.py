@@ -23,6 +23,7 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
                 if existing_row:
                     existing_id = existing_row["id"]
 
+            val_errors = res_dict.get("validation_errors") or res_dict.get("data", {}).get("issues", [])
             if existing_id:
                 query = """
                     UPDATE extraction_results
@@ -38,7 +39,8 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
                         confidence = %s,
                         overall_confidence = %s,
                         needs_review = %s,
-                        reviewed = %s
+                        reviewed = %s,
+                        validation_errors = %s
                     WHERE id = %s
                     RETURNING *;
                 """
@@ -56,6 +58,7 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
                     res_dict.get("overall_confidence", 0.95),
                     res_dict.get("needs_review", False),
                     res_dict.get("reviewed", False),
+                    json.dumps(val_errors),
                     existing_id,
                 ))
                 row = cur.fetchone()
@@ -66,9 +69,9 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
                     INSERT INTO extraction_results (
                         document_id, invoice_number, invoice_date, supplier_name, customer_name,
                         subtotal, tax, total, currency, data, confidence, overall_confidence,
-                        needs_review, reviewed, created_at
+                        needs_review, reviewed, validation_errors, created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     RETURNING *;
                 """
                 cur.execute(query, (
@@ -86,6 +89,7 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
                     res_dict.get("overall_confidence", 0.95),
                     res_dict.get("needs_review", False),
                     res_dict.get("reviewed", False),
+                    json.dumps(val_errors),
                 ))
                 row = cur.fetchone()
                 conn.commit()

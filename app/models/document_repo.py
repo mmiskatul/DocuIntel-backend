@@ -34,7 +34,7 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             if exists:
                 updates = []
                 params = []
-                for field in ["status", "stage", "progress", "page_count", "pages_done", "error", "file_base64", "filename", "file_type", "size_bytes"]:
+                for field in ["status", "stage", "progress", "page_count", "pages_done", "error", "file_base64", "extracted_text", "filename", "file_type", "size_bytes"]:
                     if field in doc and doc[field] is not None:
                         updates.append(f"{field} = %s")
                         params.append(doc[field])
@@ -47,8 +47,8 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                 return dict(res) if res else doc
             else:
                 query = """
-                    INSERT INTO documents (id, filename, file_type, size_bytes, status, stage, progress, page_count, pages_done, error, file_base64, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    INSERT INTO documents (id, filename, file_type, size_bytes, status, stage, progress, page_count, pages_done, error, file_base64, extracted_text, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING *;
                 """
                 cur.execute(query, (
@@ -63,6 +63,7 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                     doc.get("pages_done", 0),
                     doc.get("error"),
                     doc.get("file_base64"),
+                    doc.get("extracted_text"),
                 ))
                 res = cur.fetchone()
                 conn.commit()
@@ -111,17 +112,31 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
             conditions = []
             params = []
             if status and status.lower() != "all":
-                conditions.append("status = %s")
+                conditions.append("d.status = %s")
                 params.append(status.lower())
             if q and q.strip():
-                conditions.append("(filename ILIKE %s OR CAST(id AS text) ILIKE %s)")
-                params.extend([f"%{q.strip()}%", f"%{q.strip()}%"])
+                clean_q = f"%{q.strip()}%"
+                conditions.append("""(
+                    d.filename ILIKE %s 
+                    OR CAST(d.id AS text) ILIKE %s 
+                    OR d.extracted_text ILIKE %s
+                    OR EXISTS (
+                        SELECT 1 FROM extraction_results er 
+                        WHERE er.document_id = d.id 
+                          AND (
+                              er.supplier_name ILIKE %s 
+                              OR er.invoice_number ILIKE %s 
+                              OR er.customer_name ILIKE %s
+                          )
+                    )
+                )""")
+                params.extend([clean_q, clean_q, clean_q, clean_q, clean_q, clean_q])
 
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
-                SELECT * FROM documents
+                SELECT d.* FROM documents d
                 {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY d.created_at DESC
                 LIMIT %s OFFSET %s;
             """
             params.extend([limit, offset])
@@ -155,6 +170,7 @@ def delete_document(doc_id: str) -> bool:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM document_embeddings WHERE document_id = %s;", (doc_id,))
             cur.execute("DELETE FROM extraction_results WHERE document_id = %s;", (doc_id,))
+            cur.execute("DELETE FROM processing_history WHERE document_id = %s;", (doc_id,))
             cur.execute("DELETE FROM documents WHERE id = %s;", (doc_id,))
             conn.commit()
             _file_cache.pop(doc_id, None)
@@ -174,6 +190,7 @@ def delete_all_documents() -> bool:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM document_embeddings;")
             cur.execute("DELETE FROM extraction_results;")
+            cur.execute("DELETE FROM processing_history;")
             cur.execute("DELETE FROM documents;")
             conn.commit()
             _file_cache.clear()
@@ -187,7 +204,9 @@ def delete_all_documents() -> bool:
         release_conn(conn)
 
 
-def add_history(doc_id: str, action: str, message: str, reviewer: Optional[str] = None):
+def add_history(doc_id: str, action: str, message: str, reviewer: Optional[str] = None, stage: Optional[str] = None):
+    # 1. Update in-memory store for fast read access
+    now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if doc_id not in _history_store:
         _history_store[doc_id] = []
     _history_store[doc_id].append({
@@ -196,18 +215,54 @@ def add_history(doc_id: str, action: str, message: str, reviewer: Optional[str] 
         "action": action,
         "message": message,
         "reviewer": reviewer,
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "stage": stage,
+        "timestamp": now_str,
     })
+
+    # 2. Persist to PostgreSQL processing_history table
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO processing_history (document_id, action, message, stage, reviewer, created_at)
+                VALUES (%s, %s, %s, %s, %s, NOW());
+            """, (doc_id, action, message, stage, reviewer))
+            conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.warning(f"add_history db persist notice: {exc}")
+    finally:
+        release_conn(conn)
 
 
 def get_history(doc_id: str) -> List[Dict[str, Any]]:
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, document_id, action, message, stage, reviewer, created_at AS timestamp
+                FROM processing_history
+                WHERE document_id = %s
+                ORDER BY created_at ASC;
+            """, (doc_id,))
+            rows = [dict(r) for r in cur.fetchall()]
+            if rows:
+                for r in rows:
+                    if r.get("timestamp"):
+                        r["timestamp"] = r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"])
+                return rows
+    except Exception as exc:
+        logger.warning(f"get_history db query notice, using cache: {exc}")
+    finally:
+        release_conn(conn)
+
     return _history_store.get(doc_id, [
         {
             "id": "HIST-INIT",
             "document_id": doc_id,
             "action": "Intake Complete",
             "message": "Document intake and OCR parsing completed successfully.",
-            "timestamp": "2026-10-29T15:00:00Z"
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
     ])
 
