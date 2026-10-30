@@ -68,15 +68,15 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
                 "document_id": doc_id,
                 "invoice_number": None,
                 "invoice_date": None,
-                "supplier_name": extracted.get("supplier_name") or extracted.get("document_title"),
+                "supplier_name": None,
                 "customer_name": None,
                 "subtotal": None,
                 "tax": None,
                 "total": None,
                 "currency": "USD",
                 "data": extracted,
-                "confidence": {"overall": 0.35},
-                "overall_confidence": 0.35,
+                "confidence": {"overall": 0.0},
+                "overall_confidence": 0.0,
                 "needs_review": False,
                 "reviewed": False,
             })
@@ -90,7 +90,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
         add_history(
             doc_id,
             "Extraction Completed",
-            f"Extracted structured fields. Title/Vendor: {extracted.get('supplier_name') or extracted.get('document_title') or 'Document'}.",
+            f"Extracted structured fields. Vendor: {extracted.get('supplier_name') or 'Not specified'}.",
         )
 
         # Step 4: Persist Extraction Results
@@ -99,7 +99,7 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "document_id": doc_id,
             "invoice_number": extracted.get("invoice_number"),
             "invoice_date": extracted.get("invoice_date"),
-            "supplier_name": extracted.get("supplier_name") or extracted.get("document_title"),
+            "supplier_name": extracted.get("supplier_name"),
             "customer_name": extracted.get("customer_name"),
             "subtotal": extracted.get("subtotal"),
             "tax": extracted.get("tax"),

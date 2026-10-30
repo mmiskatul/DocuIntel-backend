@@ -12,34 +12,84 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            query = """
-                INSERT INTO extraction_results (
-                    document_id, invoice_number, invoice_date, supplier_name, customer_name,
-                    subtotal, tax, total, currency, data, confidence, overall_confidence,
-                    needs_review, reviewed, created_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                RETURNING *;
-            """
-            cur.execute(query, (
-                res_dict.get("document_id"),
-                res_dict.get("invoice_number"),
-                res_dict.get("invoice_date"),
-                res_dict.get("supplier_name"),
-                res_dict.get("customer_name"),
-                res_dict.get("subtotal"),
-                res_dict.get("tax"),
-                res_dict.get("total"),
-                res_dict.get("currency", "USD"),
-                json.dumps(res_dict.get("data", {})),
-                json.dumps(res_dict.get("confidence", {})),
-                res_dict.get("overall_confidence", 0.95),
-                res_dict.get("needs_review", False),
-                res_dict.get("reviewed", False),
-            ))
-            row = cur.fetchone()
-            conn.commit()
-            return dict(row) if row else res_dict
+            res_id = res_dict.get("id")
+            doc_id = res_dict.get("document_id")
+
+            # Check if an existing extraction result exists for this document_id
+            existing_id = res_id
+            if not existing_id and doc_id:
+                cur.execute("SELECT id FROM extraction_results WHERE document_id = %s ORDER BY id DESC LIMIT 1;", (doc_id,))
+                existing_row = cur.fetchone()
+                if existing_row:
+                    existing_id = existing_row["id"]
+
+            if existing_id:
+                query = """
+                    UPDATE extraction_results
+                    SET invoice_number = %s,
+                        invoice_date = %s,
+                        supplier_name = %s,
+                        customer_name = %s,
+                        subtotal = %s,
+                        tax = %s,
+                        total = %s,
+                        currency = %s,
+                        data = %s,
+                        confidence = %s,
+                        overall_confidence = %s,
+                        needs_review = %s,
+                        reviewed = %s
+                    WHERE id = %s
+                    RETURNING *;
+                """
+                cur.execute(query, (
+                    res_dict.get("invoice_number"),
+                    res_dict.get("invoice_date"),
+                    res_dict.get("supplier_name"),
+                    res_dict.get("customer_name"),
+                    res_dict.get("subtotal"),
+                    res_dict.get("tax"),
+                    res_dict.get("total"),
+                    res_dict.get("currency", "USD"),
+                    json.dumps(res_dict.get("data", {})),
+                    json.dumps(res_dict.get("confidence", {})),
+                    res_dict.get("overall_confidence", 0.95),
+                    res_dict.get("needs_review", False),
+                    res_dict.get("reviewed", False),
+                    existing_id,
+                ))
+                row = cur.fetchone()
+                conn.commit()
+                return dict(row) if row else res_dict
+            else:
+                query = """
+                    INSERT INTO extraction_results (
+                        document_id, invoice_number, invoice_date, supplier_name, customer_name,
+                        subtotal, tax, total, currency, data, confidence, overall_confidence,
+                        needs_review, reviewed, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    RETURNING *;
+                """
+                cur.execute(query, (
+                    doc_id,
+                    res_dict.get("invoice_number"),
+                    res_dict.get("invoice_date"),
+                    res_dict.get("supplier_name"),
+                    res_dict.get("customer_name"),
+                    res_dict.get("subtotal"),
+                    res_dict.get("tax"),
+                    res_dict.get("total"),
+                    res_dict.get("currency", "USD"),
+                    json.dumps(res_dict.get("data", {})),
+                    json.dumps(res_dict.get("confidence", {})),
+                    res_dict.get("overall_confidence", 0.95),
+                    res_dict.get("needs_review", False),
+                    res_dict.get("reviewed", False),
+                ))
+                row = cur.fetchone()
+                conn.commit()
+                return dict(row) if row else res_dict
     finally:
         release_conn(conn)
 

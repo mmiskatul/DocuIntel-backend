@@ -114,7 +114,7 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                 conditions.append("status = %s")
                 params.append(status.lower())
             if q and q.strip():
-                conditions.append("(filename ILIKE %s OR id ILIKE %s)")
+                conditions.append("(filename ILIKE %s OR CAST(id AS text) ILIKE %s)")
                 params.extend([f"%{q.strip()}%", f"%{q.strip()}%"])
 
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""

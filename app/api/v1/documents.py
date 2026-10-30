@@ -1,4 +1,4 @@
-"""Documents controller handling upload, intake, file streaming, approval, and reconciliation."""
+"""Documents controller handling upload, processing status, extracted results, manual corrections, and failed-job reprocessing."""
 import base64
 import uuid
 import logging
@@ -38,12 +38,35 @@ class ReconcileRequest(BaseModel):
     reviewer: str = "reviewer@docuintel.com"
 
 
+class ManualCorrectionRequest(BaseModel):
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    supplier_name: Optional[str] = None
+    customer_name: Optional[str] = None
+    subtotal: Optional[float] = None
+    tax: Optional[float] = None
+    total: Optional[float] = None
+    currency: Optional[str] = None
+    line_items: Optional[List[Dict[str, Any]]] = None
+    reviewer: str = "reviewer@docuintel.com"
+    notes: Optional[str] = None
+
+
+# ==============================================================================
+# 1. DOCUMENT UPLOADS (REST API with Background Processing for OCR & AI)
+# ==============================================================================
+
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
 async def upload_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
 ):
-    """Uploads documents, persists raw bytes, and queues background processing."""
+    """
+    REST API endpoint for document uploads.
+    Persists file bytes, returns HTTP 202 Accepted instantly, and executes time-consuming
+    OCR, multimodal AI extraction, and vector indexing asynchronously in the background.
+    """
     results = []
     for file in files:
         doc_id = str(uuid.uuid4())
@@ -74,17 +97,22 @@ async def upload_documents(
         # Cache file in memory for instant delivery
         cache_file(doc_id, content, mime, file.filename)
 
-        # Queue pipeline processing in background
+        # Queue background processing for time-consuming OCR and AI extraction
         background_tasks.add_task(run_document_pipeline, doc_id, file.filename, content, mime)
 
         results.append({
             "id": doc_id,
             "filename": file.filename,
             "status": "queued",
+            "stage": "Uploaded",
         })
 
     return results
 
+
+# ==============================================================================
+# 2. PROCESSING STATUS & DOCUMENT LISTING
+# ==============================================================================
 
 @router.get("")
 def get_documents_list(
@@ -93,17 +121,42 @@ def get_documents_list(
     limit: int = 100,
     offset: int = 0,
 ):
-    """Lists all processed documents with summaries."""
+    """Lists all processed documents with summaries and processing status."""
     return list_documents(q=q, status=status, limit=limit, offset=offset)
 
 
 @router.get("/{doc_id}")
 def get_single_document(doc_id: str):
-    """Retrieves single document metadata and extraction summary."""
+    """Retrieves single document metadata, status, and extraction summary."""
     doc = get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
     return doc
+
+
+@router.get("/{doc_id}/status")
+def get_document_processing_status(doc_id: str):
+    """
+    REST API endpoint for polling document processing status and pipeline progress.
+    Returns status ('queued' | 'processing' | 'completed' | 'needs_review' | 'rejected' | 'failed'),
+    active pipeline stage, progress percentage (0.0 to 1.0), and error/flag messages.
+    """
+    doc = get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    return {
+        "id": doc["id"],
+        "filename": doc["filename"],
+        "status": doc["status"],
+        "stage": doc.get("stage", "Uploaded"),
+        "progress": doc.get("progress", 0.0),
+        "page_count": doc.get("page_count", 1),
+        "pages_done": doc.get("pages_done", 0),
+        "error": doc.get("error"),
+        "needs_review": doc.get("needs_review", False),
+        "updated_at": doc.get("updated_at"),
+    }
 
 
 @router.get("/{doc_id}/file")
@@ -139,9 +192,17 @@ def stream_document_file(doc_id: str):
     )
 
 
+# ==============================================================================
+# 3. EXTRACTED RESULTS
+# ==============================================================================
+
 @router.get("/{doc_id}/results")
 def get_results_for_document(doc_id: str):
-    """Retrieves structured extraction results."""
+    """
+    REST API endpoint for retrieving structured extraction results:
+    Returns invoice_number, invoice_date, supplier_name, customer_name,
+    subtotal, tax, total, currency, line_items, confidence, and validation issues.
+    """
     return get_extraction_results(doc_id)
 
 
@@ -152,40 +213,105 @@ def get_audit_history(doc_id: str):
     return get_history(doc_id)
 
 
-@router.post("/{doc_id}/approve")
-def approve_document(doc_id: str, body: ApproveRequest = ApproveRequest()):
-    """Marks document as approved and automatically syncs all chunks into vector database."""
+# ==============================================================================
+# 4. MANUAL CORRECTIONS & RECONCILIATION
+# ==============================================================================
+
+@router.post("/{doc_id}/correct")
+@router.put("/{doc_id}/correct")
+@router.put("/{doc_id}/results")
+def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
+    """
+    REST API endpoint for manual corrections.
+    Allows human reviewers to update extracted key-value fields, override totals,
+    clear validation flags, set status to 'completed', and store verified chunks in vector database.
+    """
     doc = get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
+    results = get_extraction_results(doc_id)
+    res = results[0] if results and len(results) > 0 else {}
+    data = res.get("data") or {}
+
+    # Apply manual corrections
+    if body.invoice_number is not None:
+        data["invoice_number"] = body.invoice_number
+    if body.invoice_date is not None:
+        data["invoice_date"] = body.invoice_date
+    if body.supplier_name is not None:
+        data["supplier_name"] = body.supplier_name
+    if body.customer_name is not None:
+        data["customer_name"] = body.customer_name
+    if body.subtotal is not None:
+        data["subtotal"] = body.subtotal
+    if body.tax is not None:
+        data["tax"] = body.tax
+    if body.total is not None:
+        data["total"] = body.total
+    if body.currency is not None:
+        data["currency"] = body.currency
+    if body.line_items is not None:
+        data["line_items"] = body.line_items
+
+    # Clear issues upon human review
+    data["issues"] = []
+    data["reviewed"] = True
+
+    save_extraction_result({
+        "id": res.get("id"),
+        "document_id": doc_id,
+        "invoice_number": data.get("invoice_number"),
+        "invoice_date": data.get("invoice_date"),
+        "supplier_name": data.get("supplier_name"),
+        "customer_name": data.get("customer_name"),
+        "subtotal": data.get("subtotal"),
+        "tax": data.get("tax"),
+        "total": data.get("total"),
+        "currency": data.get("currency", "USD"),
+        "data": data,
+        "overall_confidence": 1.0,
+        "needs_review": False,
+        "reviewed": True,
+    })
+
     save_document({
         "id": doc_id,
         "status": "completed",
-        "stage": "Approved & Vectorized",
+        "stage": "Manually Corrected & Vectorized",
         "progress": 1.0,
+        "needs_review": False,
     })
-    add_history(doc_id, "Document Approved & Vectorized", f"Approved by {body.reviewer}. Chunks stored in vector database.", body.reviewer)
 
-    # Automatically store in vector database!
+    add_history(
+        doc_id,
+        "Manual Correction Applied",
+        f"Corrected by {body.reviewer}. {body.notes or 'Fields updated and verified.'}",
+        body.reviewer,
+    )
+
+    # Automatically store verified chunks in vector database
     try:
-        from app.services.rag_service import index_document_chunks
-        results = get_extraction_results(doc_id)
-        raw_text = ""
-        if results and len(results) > 0:
-            raw_text = results[0].get("raw_text") or (results[0].get("data") or {}).get("raw_text") or ""
+        raw_text = res.get("raw_text") or data.get("raw_text") or ""
         if not raw_text:
             cached = get_cached_file(doc_id)
             if cached:
                 from app.services.extractor import extract_raw_text
                 raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
         if raw_text:
+            from app.services.rag_service import index_document_chunks
             index_document_chunks(doc_id, raw_text)
-            logger.info(f"Document {doc_id} successfully stored in vector database.")
+            logger.info(f"Document {doc_id} successfully vectorized following manual correction.")
     except Exception as exc:
-        logger.warning(f"Vector storage notice on approval: {exc}")
+        logger.warning(f"Vector storage notice on manual correction: {exc}")
 
-    return {"success": True, "status": "completed", "stage": "Approved & Vectorized", "vector_stored": True}
+    return {
+        "success": True,
+        "status": "completed",
+        "stage": "Manually Corrected & Vectorized",
+        "vector_stored": True,
+        "data": data,
+    }
 
 
 @router.post("/{doc_id}/reconcile")
@@ -254,6 +380,41 @@ def reconcile_document(doc_id: str, body: ReconcileRequest):
     return {"success": True, "status": "completed", "stage": "Reconciled & Vectorized", "vector_stored": True}
 
 
+@router.post("/{doc_id}/approve")
+def approve_document(doc_id: str, body: ApproveRequest = ApproveRequest()):
+    """Marks document as approved and automatically syncs all chunks into vector database."""
+    doc = get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    save_document({
+        "id": doc_id,
+        "status": "completed",
+        "stage": "Approved & Vectorized",
+        "progress": 1.0,
+    })
+    add_history(doc_id, "Document Approved & Vectorized", f"Approved by {body.reviewer}. Chunks stored in vector database.", body.reviewer)
+
+    try:
+        from app.services.rag_service import index_document_chunks
+        results = get_extraction_results(doc_id)
+        raw_text = ""
+        if results and len(results) > 0:
+            raw_text = results[0].get("raw_text") or (results[0].get("data") or {}).get("raw_text") or ""
+        if not raw_text:
+            cached = get_cached_file(doc_id)
+            if cached:
+                from app.services.extractor import extract_raw_text
+                raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
+        if raw_text:
+            index_document_chunks(doc_id, raw_text)
+            logger.info(f"Document {doc_id} successfully stored in vector database.")
+    except Exception as exc:
+        logger.warning(f"Vector storage notice on approval: {exc}")
+
+    return {"success": True, "status": "completed", "stage": "Approved & Vectorized", "vector_stored": True}
+
+
 @router.post("/{doc_id}/reject")
 def reject_document(doc_id: str, body: RejectRequest = RejectRequest()):
     """Marks document as rejected due to format mismatch or unverified data."""
@@ -272,9 +433,18 @@ def reject_document(doc_id: str, body: RejectRequest = RejectRequest()):
     return {"success": True, "status": "rejected", "stage": "Format Rejected", "reason": body.reason}
 
 
+# ==============================================================================
+# 5. FAILED-JOB REPROCESSING & RETRY
+# ==============================================================================
+
+@router.post("/{doc_id}/reprocess")
+@router.post("/{doc_id}/retry")
 @router.post("/{doc_id}/re-ocr")
-def rerun_ocr(doc_id: str, background_tasks: BackgroundTasks):
-    """Re-triggers OCR and extraction pipeline."""
+def reprocess_document(doc_id: str, background_tasks: BackgroundTasks):
+    """
+    REST API endpoint for failed-job reprocessing.
+    Queues OCR, multimodal AI extraction, and vector pipeline in the background.
+    """
     doc = get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
@@ -285,10 +455,62 @@ def rerun_ocr(doc_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="Document binary not available for re-processing.")
 
     mime = doc.get("file_type") or "application/pdf"
-    background_tasks.add_task(run_document_pipeline, doc_id, doc["filename"], content, mime)
-    add_history(doc_id, "Re-run OCR Triggered", "User initiated re-processing of document.")
-    return {"success": True, "message": "OCR and extraction re-processing queued."}
 
+    # Reset status to queued
+    save_document({
+        "id": doc_id,
+        "status": "queued",
+        "stage": "Reprocessing Queued",
+        "progress": 0.1,
+        "error": None,
+    })
+
+    background_tasks.add_task(run_document_pipeline, doc_id, doc["filename"], content, mime)
+    add_history(doc_id, "Reprocessing Queued", "Background worker queued to re-run OCR and extraction pipeline.")
+    return {
+        "success": True,
+        "id": doc_id,
+        "status": "queued",
+        "stage": "Reprocessing Queued",
+        "message": "Background reprocessing job initiated.",
+    }
+
+
+@router.post("/reprocess-failed")
+def reprocess_all_failed_documents(background_tasks: BackgroundTasks):
+    """
+    REST API endpoint to batch reprocess all failed jobs.
+    Scans the database for failed documents and re-queues them in the background.
+    """
+    failed_docs = list_documents(status="failed", limit=50)
+    requeued = []
+    for doc in failed_docs:
+        doc_id = doc["id"]
+        cached = get_cached_file(doc_id)
+        content = cached["bytes"] if cached else (base64.b64decode(doc["file_base64"]) if doc.get("file_base64") else b"")
+        if content:
+            mime = doc.get("file_type") or "application/pdf"
+            save_document({
+                "id": doc_id,
+                "status": "queued",
+                "stage": "Reprocessing Queued",
+                "progress": 0.1,
+                "error": None,
+            })
+            background_tasks.add_task(run_document_pipeline, doc_id, doc["filename"], content, mime)
+            requeued.append(doc_id)
+
+    return {
+        "success": True,
+        "requeued_count": len(requeued),
+        "requeued_document_ids": requeued,
+        "message": f"Queued {len(requeued)} failed document(s) for background reprocessing.",
+    }
+
+
+# ==============================================================================
+# BATCH & DELETE
+# ==============================================================================
 
 @router.post("/batch-approve")
 def batch_approve(dto: BatchApproveRequest):
