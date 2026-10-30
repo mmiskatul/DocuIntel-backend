@@ -7,6 +7,8 @@ Evaluates the end-to-end document processing pipeline against a labeled ground-t
 4. Failure Rate (% of corrupted or non-invoice files properly rejected/failed)
 """
 import io
+import os
+import sys
 import time
 import uuid
 import statistics
@@ -14,6 +16,9 @@ from typing import Any, Dict, List, Tuple
 import openpyxl
 from PIL import Image, ImageDraw
 import pymupdf
+
+# Ensure backend root is on sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models.document_repo import save_document, get_document, delete_document
 from app.models.result_repo import get_extraction_results
