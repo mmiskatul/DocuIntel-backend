@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.config import OPENAI_API_KEY, MAX_INDEX_CHUNKS
-from app.models.embedding_repo import save_document_embedding, search_document_embeddings
+from app.models.embedding_repo import delete_document_embeddings, save_document_embedding, search_document_embeddings
 
 logger = logging.getLogger("docuintel.services.search")
 
@@ -73,6 +73,7 @@ def index_document_chunks(doc_id: str, full_text: str):
 
     chunks = chunks[:MAX_INDEX_CHUNKS]
     vectors = embeddings_model.embed_documents(chunks)  # batched API calls
+    delete_document_embeddings(doc_id)
     for chunk, vector in zip(chunks, vectors):
         save_document_embedding(doc_id, chunk, vector)
 

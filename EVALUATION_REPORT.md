@@ -6,9 +6,9 @@ Re-run with `python tests/evaluate_benchmark.py` and `pytest tests` (needs `DATA
 
 ## 1. Automated test suite
 
-`pytest tests` → **39 passed, 0 failed** (240 s). Covers: PDF/CSV/XLSX/XLS/image parsing, OCR routing, 1000-page PDF,
+`pytest tests` → **43 passed, 0 failed** (260 s). Covers: PDF/CSV/XLSX/XLS/image parsing, OCR routing, 1000-page PDF,
 corrupt and empty files, AI extraction (incl. LLM-outage behaviour), validation rules, REST endpoints, upload limits,
-API-key auth, durable job recovery, database + pgvector search, evaluation benchmark.
+multi-invoice splitting, per-invoice corrections, API-key auth, durable job recovery, database + pgvector search, evaluation benchmark.
 
 ## 2. Labeled benchmark (`tests/evaluate_benchmark.py`)
 
@@ -56,6 +56,6 @@ A 1000-page digital PDF (0.41 MB) is parsed to text in **0.09 s** (unit test). T
 - Line-item accuracy is **not scored** by the benchmark (only header fields).
 - Poor-quality images are the weak spot: the model can return plausible but wrong text for unreadable input. The OCR prompt now asks it to emit `[illegible]`
   (such documents are forced to manual review), but the synthetic blurry receipt above was still misread without that marker. Validation, not OCR, caught it.
-- Multi-invoice PDFs produce a single result; only the head/tail of very long documents is sent to the LLM.
+- Multi-invoice PDFs are split by printed invoice number (one result per invoice, verified on a 4-page, 3-invoice bundle). Splitting relies on a recognisable "Invoice No/Number/#" label on each invoice's first page; bundles without one stay a single result. Within a single invoice only the head/tail of very long text is sent to the LLM.
 - No load test was run; only three concurrent workers were exercised.
 - Job durability is PostgreSQL-backed recovery on restart, not Redis/BullMQ. A multi-instance deployment would need a lock (e.g. `FOR UPDATE SKIP LOCKED`) before recovery.

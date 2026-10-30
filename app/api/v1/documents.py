@@ -51,6 +51,8 @@ class ManualCorrectionRequest(BaseModel):
     line_items: Optional[List[Dict[str, Any]]] = None
     reviewer: str = "reviewer@docuintel.com"
     notes: Optional[str] = None
+    result_id: Optional[int] = None  # which invoice of a multi-invoice document; defaults to the first
+    corrections: Optional[Dict[str, Any]] = None  # nested form used by the web UI; merged over the flat fields
 
 
 # ==============================================================================
@@ -240,8 +242,19 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
         raise HTTPException(status_code=404, detail="Document not found.")
 
     results = get_extraction_results(doc_id)
-    res = results[0] if results and len(results) > 0 else {}
+    res = next((r for r in results if body.result_id is not None and r.get("id") == body.result_id), None)
+    if res is None:
+        if body.result_id is not None:
+            raise HTTPException(status_code=404, detail="Extraction result not found for this document.")
+        res = results[0] if results else {}
     data = res.get("data") or {}
+
+    # Merge the nested UI form into the flat fields
+    if body.corrections:
+        allowed = {"invoice_number", "invoice_date", "supplier_name", "customer_name", "subtotal", "tax", "total", "currency", "line_items"}
+        for k, v in body.corrections.items():
+            if k in allowed and v is not None and getattr(body, k, None) is None:
+                setattr(body, k, v)
 
     # Apply manual corrections
     if body.invoice_number is not None:
@@ -284,12 +297,15 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
         "reviewed": True,
     })
 
+    # In a multi-invoice document the document stays in review until every invoice has been reviewed
+    pending = [r for r in results if r.get("id") != res.get("id") and r.get("needs_review") and not r.get("reviewed")]
+    doc_status = "needs_review" if pending else "completed"
     save_document({
         "id": doc_id,
-        "status": "completed",
-        "stage": "Manually Corrected & Vectorized",
+        "status": doc_status,
+        "stage": "Manually Corrected" if pending else "Manually Corrected & Vectorized",
         "progress": 1.0,
-        "needs_review": False,
+        "needs_review": bool(pending),
     })
 
     add_history(
@@ -299,8 +315,10 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
         body.reviewer,
     )
 
-    # Automatically store verified chunks in vector database
+    # Automatically store verified chunks in vector database (once nothing is left to review)
     try:
+        if pending:
+            raise RuntimeError(f"{len(pending)} invoice(s) still need review; indexing deferred")
         raw_text = res.get("raw_text") or data.get("raw_text") or ""
         if not raw_text:
             cached = get_cached_file(doc_id)
@@ -316,9 +334,9 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
 
     return {
         "success": True,
-        "status": "completed",
-        "stage": "Manually Corrected & Vectorized",
-        "vector_stored": True,
+        "status": doc_status,
+        "stage": "Manually Corrected" if pending else "Manually Corrected & Vectorized",
+        "vector_stored": not pending,
         "data": data,
     }
 

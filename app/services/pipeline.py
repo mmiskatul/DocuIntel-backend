@@ -1,12 +1,95 @@
 """Document intake and processing pipeline orchestrator."""
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List
+
+from app.config import EXTRACTION_PARALLELISM, MAX_INVOICES_PER_DOCUMENT
 from app.models.document_repo import save_document, add_history
-from app.models.result_repo import save_extraction_result
+from app.models.result_repo import delete_results_for_document, save_extraction_result
+from app.services.segmenter import split_invoice_segments
 from app.services.extractor import extract_raw_text, extract_structured_fields
 from app.services.validator import validate_document_data
 from app.services.rag_service import index_document_chunks
 
 logger = logging.getLogger("docuintel.services.pipeline")
+
+
+def _run_multi_invoice(doc_id: str, filename: str, text: str, segments: List[Dict[str, Any]], page_count: int):
+    """Processes a bundle PDF: one extraction + validation + result row per detected invoice."""
+    n = len(segments)
+    delete_results_for_document(doc_id)
+    add_history(doc_id, "Multiple Invoices Detected", f"Document split into {n} invoice segment(s) by invoice number.")
+
+    def _extract(seg):
+        return extract_structured_fields(seg["text"], f"{filename} (pages {seg['start_page']}-{seg['end_page']})")
+
+    extracted_list = []
+    with ThreadPoolExecutor(max_workers=max(1, EXTRACTION_PARALLELISM)) as pool:
+        for i, extracted in enumerate(pool.map(_extract, segments)):
+            extracted_list.append(extracted)
+            save_document({"id": doc_id, "status": "processing", "stage": f"Information Extraction ({i + 1}/{n})",
+                           "progress": round(0.6 + 0.25 * (i + 1) / n, 2)})
+
+    seen = set()
+    any_review, saved = False, 0
+    skipped = []
+    first_reason = None
+    for seg, extracted in zip(segments, extracted_list):
+        issues, needs_review, _ = validate_document_data(extracted=extracted, doc_id=doc_id, filename=filename, check_duplicates=True)
+        rejected = (not extracted.get("is_supported_format", True)) or any(
+            i.get("code") == "FORMAT_REJECTED" or i.get("severity") == "fatal" for i in issues)
+        if rejected:
+            skipped.append(f"pages {seg['start_page']}-{seg['end_page']}")
+            first_reason = first_reason or extracted.get("rejection_reason")
+            continue
+
+        key = (str(extracted.get("invoice_number") or "").strip().lower(), str(extracted.get("supplier_name") or "").strip().lower())
+        if key[0] and key in seen:
+            issues.append({"code": "DUPLICATE_INVOICE", "severity": "error", "field": "invoice_number",
+                           "message": f"Invoice #{extracted.get('invoice_number')} appears more than once in this document.", "details": {}})
+            needs_review = True
+        seen.add(key)
+        if "[illegible]" in seg["text"].lower():
+            issues.append({"code": "LOW_OCR_QUALITY", "severity": "error", "field": "document",
+                           "message": "Parts of this invoice were illegible to OCR; verify against the original.", "details": {}})
+            needs_review = True
+
+        extracted["issues"] = issues
+        extracted["page_range"] = [seg["start_page"], seg["end_page"]]
+        extracted["segment_index"] = saved + 1
+        conf = 0.82 if needs_review else 0.98
+        save_extraction_result({
+            "document_id": doc_id,
+            "invoice_number": extracted.get("invoice_number"), "invoice_date": extracted.get("invoice_date"),
+            "supplier_name": extracted.get("supplier_name"), "customer_name": extracted.get("customer_name"),
+            "subtotal": extracted.get("subtotal"), "tax": extracted.get("tax"), "total": extracted.get("total"),
+            "currency": extracted.get("currency", "USD"), "data": extracted, "confidence": {"overall": conf},
+            "overall_confidence": conf, "needs_review": needs_review, "reviewed": False, "validation_errors": issues,
+        }, insert_new=True)
+        saved += 1
+        any_review = any_review or needs_review
+
+    if saved == 0:
+        reason = first_reason or "Document does not match supported business invoice/waybill format."
+        save_document({"id": doc_id, "status": "rejected", "stage": "Format Rejected", "error": reason,
+                       "progress": 1.0, "page_count": page_count, "pages_done": page_count})
+        add_history(doc_id, "Document Rejected (Format Mismatch)", reason)
+        return
+
+    if skipped:
+        add_history(doc_id, "Segments Skipped", f"Non-invoice segment(s) ignored: {', '.join(skipped)}.")
+
+    if any_review:
+        stage = "Needs Review (Validation Flagged)"
+        add_history(doc_id, "Flagged for Manual Review", f"{saved} invoice(s) extracted; at least one needs review. Vector indexing held.")
+    else:
+        save_document({"id": doc_id, "status": "processing", "stage": "Vector Indexing", "progress": 0.9})
+        index_document_chunks(doc_id, text)
+        stage = "Completed & Vectorized"
+        add_history(doc_id, "Processing Completed & Vectorized", f"{saved} invoice(s) extracted and validated cleanly.")
+
+    save_document({"id": doc_id, "status": "needs_review" if any_review else "completed", "stage": stage,
+                   "progress": 1.0, "page_count": page_count, "pages_done": page_count})
 
 
 def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_type: str):
@@ -36,6 +119,12 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             "pages_done": page_count,
             "extracted_text": text,
         })
+        delete_results_for_document(doc_id)  # drop stale rows from earlier runs (re-processing)
+        segments = split_invoice_segments(text, MAX_INVOICES_PER_DOCUMENT)
+        if len(segments) > 1:
+            _run_multi_invoice(doc_id, filename, text, segments, page_count)
+            return
+
         extracted = extract_structured_fields(text, filename)
 
         # Step 3: Run Full Enterprise Validation Rules

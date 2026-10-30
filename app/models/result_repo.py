@@ -8,7 +8,7 @@ from app.core.database import get_conn, release_conn
 logger = logging.getLogger("docuintel.models.result")
 
 
-def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
+def save_extraction_result(res_dict: Dict[str, Any], insert_new: bool = False) -> Dict[str, Any]:
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -17,7 +17,7 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
 
             # Check if an existing extraction result exists for this document_id
             existing_id = res_id
-            if not existing_id and doc_id:
+            if not existing_id and doc_id and not insert_new:
                 cur.execute("SELECT id FROM extraction_results WHERE document_id = %s ORDER BY id DESC LIMIT 1;", (doc_id,))
                 existing_row = cur.fetchone()
                 if existing_row:
@@ -94,6 +94,17 @@ def save_extraction_result(res_dict: Dict[str, Any]) -> Dict[str, Any]:
                 row = cur.fetchone()
                 conn.commit()
                 return dict(row) if row else res_dict
+    finally:
+        release_conn(conn)
+
+
+def delete_results_for_document(doc_id: str) -> None:
+    """Removes previous extraction rows (used before re-processing so stale invoices do not linger)."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM extraction_results WHERE document_id = %s;", (doc_id,))
+            conn.commit()
     finally:
         release_conn(conn)
 

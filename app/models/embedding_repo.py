@@ -8,6 +8,20 @@ from app.core.database import get_conn, release_conn
 logger = logging.getLogger("docuintel.models.embedding")
 
 
+def delete_document_embeddings(doc_id: str):
+    """Removes a document's stored chunks so re-indexing replaces rather than duplicates them."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM document_embeddings WHERE document_id = %s;", (doc_id,))
+            conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"delete_document_embeddings error: {exc}")
+    finally:
+        release_conn(conn)
+
+
 def save_document_embedding(doc_id: str, chunk_text: str, vector: List[float]):
     """Stores text chunk and its dense vector embedding into Supabase pgvector."""
     conn = get_conn()

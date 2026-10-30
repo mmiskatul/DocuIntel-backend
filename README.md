@@ -15,7 +15,7 @@ It processes multi-modal financial documents (**multi-page digital & scanned PDF
 | **3** | **Architecture diagram & database schema** | Detailed Mermaid diagrams and relational DDL below + in [`ARCHITECTURE_AND_SCHEMA.md`](./ARCHITECTURE_AND_SCHEMA.md). |
 | **4** | **Working backend API and frontend** | Modular FastAPI backend with interactive Swagger (`http://localhost:8000/docs`) and responsive Next.js 16 UI (`http://localhost:3000`). |
 | **5** | **PDF, image, Excel, and CSV pipelines** | Supported formats: Multi-page digital PDFs, scanned PDFs (Vision OCR), Images (PNG/JPG/TIFF), Multi-sheet Excel (`.xlsx` & `.xls`), and CSVs. |
-| **6** | **Automated tests and test results** | Full test suite: 39 automated tests in `tests/` covering validation, APIs, database, pgvector search, and dynamic rejection (100% pass rate). |
+| **6** | **Automated tests and test results** | Full test suite: 43 automated tests in `tests/` covering validation, APIs, database, pgvector search, and dynamic rejection (100% pass rate). |
 | **7** | **Evaluation report with measured metrics** | Exhaustive benchmark report with actual metrics in [`EVALUATION_REPORT.md`](./EVALUATION_REPORT.md). |
 | **8** | **Recorded walkthrough of the working application** | Walkthrough demonstration script & step-by-step recording guide included below. |
 | **9** | **AI prompts & disclosure of AI development** | Complete disclosure of extraction prompts, anti-hallucination constraints, and AI-assisted tooling below. |
@@ -351,3 +351,4 @@ When recording the walkthrough video, follow this recommended sequence to demons
 * **Limits** (env): `MAX_UPLOAD_MB`, `MAX_FILES_PER_REQUEST`, `MAX_OCR_PAGES`, `MAX_INDEX_CHUNKS`, `EXTRACT_HEAD_CHARS`, `EXTRACT_TAIL_CHARS`, `CORS_ORIGINS`.
 * **Data handling**: document text and images are sent to OpenAI for OCR, extraction and embeddings.
 * **Low-quality scans**: OCR emits `[illegible]` for unreadable text; such documents are routed to manual review (`LOW_OCR_QUALITY`).
+* **Multi-invoice PDFs**: pages are grouped by the invoice number printed on them (`app/services/segmenter.py`); each invoice gets its own extraction result, validation and review state. The detail page shows a tab per invoice, and manual corrections target one invoice via `result_id`. `MAX_INVOICES_PER_DOCUMENT` and `EXTRACTION_PARALLELISM` tune this.
