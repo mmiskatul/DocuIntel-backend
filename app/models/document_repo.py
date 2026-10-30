@@ -92,6 +92,9 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
             doc["summary"] = {
                 "invoice_number": r.get("invoice_number") if r else None,
                 "supplier_name": r.get("supplier_name") if r else None,
+                "customer_name": r.get("customer_name") if r else None,
+                "subtotal": float(r["subtotal"]) if r and r.get("subtotal") is not None else None,
+                "tax": float(r["tax"]) if r and r.get("tax") is not None else None,
                 "total": float(r["total"]) if r and r.get("total") is not None else None,
                 "currency": r.get("currency", "USD") if r else "USD",
                 "invoice_date": r.get("invoice_date") if r else None,
@@ -134,6 +137,9 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                 doc["summary"] = {
                     "invoice_number": r.get("invoice_number") if r else None,
                     "supplier_name": r.get("supplier_name") if r else None,
+                    "customer_name": r.get("customer_name") if r else None,
+                    "subtotal": float(r["subtotal"]) if r and r.get("subtotal") is not None else None,
+                    "tax": float(r["tax"]) if r and r.get("tax") is not None else None,
                     "total": float(r["total"]) if r and r.get("total") is not None else None,
                     "currency": r.get("currency", "USD") if r else "USD",
                     "invoice_date": r.get("invoice_date") if r else None,

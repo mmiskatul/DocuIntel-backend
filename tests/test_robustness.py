@@ -135,3 +135,30 @@ def test_assignment_document_format_rejection():
     assert "Assignment" in doc["error"] or "Format" in doc["error"]
 
     delete_document(doc_id)
+
+
+def test_missing_and_uncertain_information_handling():
+    """Verify missing fields (no customer name, no tax stated) are extracted as None without inventing values."""
+    from app.services.extractor import extract_structured_fields
+
+    minimal_invoice_text = (
+        "TAX INVOICE\n"
+        "Invoice Number: INV-8821\n"
+        "Date: 2026-03-20\n"
+        "Vendor: Beta Corp Logistics\n"
+        "Item: Storage Rental - $500.00\n"
+        "Total: $500.00\n"
+    )
+    # Notice: customer_name, subtotal, and tax are NOT mentioned at all in the document!
+    res = extract_structured_fields(minimal_invoice_text, "beta_invoice.pdf")
+    assert res["is_supported_format"] is True
+    assert res["invoice_number"] == "INV-8821"
+    assert "Beta Corp" in (res["supplier_name"] or "")
+    assert res["total"] == 500.0
+    # Crucial anti-hallucination check: customer_name must NOT be invented
+    assert res.get("customer_name") is None or res.get("customer_name") == ""
+    # Tax was not stated: must NOT be invented
+    assert res.get("tax") is None or res.get("tax") == 0.0
+    # Line items: only the real stated item
+    assert len(res.get("line_items", [])) >= 1
+
