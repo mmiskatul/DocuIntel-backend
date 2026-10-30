@@ -28,3 +28,7 @@ MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "100"))
 EXTRACT_HEAD_CHARS = int(os.getenv("EXTRACT_HEAD_CHARS", "6000"))
 EXTRACT_TAIL_CHARS = int(os.getenv("EXTRACT_TAIL_CHARS", "4000"))
 MAX_INDEX_CHUNKS = int(os.getenv("MAX_INDEX_CHUNKS", "200"))
+
+# Security & workers
+API_KEY = os.getenv("API_KEY", "")  # when set, every /api request must send it (X-API-Key or Bearer)
+WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))

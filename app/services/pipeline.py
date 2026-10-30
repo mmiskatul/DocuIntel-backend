@@ -46,6 +46,16 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             filename=filename,
             check_duplicates=True,
         )
+        if "[illegible]" in text.lower():
+            issues.append({
+                "code": "LOW_OCR_QUALITY",
+                "severity": "error",
+                "field": "document",
+                "message": "Parts of the document were illegible to OCR; extracted values must be verified against the original.",
+                "details": {},
+            })
+            if not needs_review:
+                needs_review, review_stage = True, "Needs Review (Low OCR Quality)"
         extracted["issues"] = issues
 
         is_supported = extracted.get("is_supported_format", True)

@@ -38,7 +38,7 @@ flowchart TD
         DB_Documents[("documents<br/>Metadata, Status, Stage, Extracted Text")]
         DB_Results[("extraction_results<br/>Header Fields, Line Items JSON, Issues")]
         DB_History[("processing_history<br/>Audit Trail & Reconciliation Logs")]
-        DB_Embeddings[("document_embeddings<br/>768-Dim Dense Vectors + HNSW Index")]
+        DB_Embeddings[("document_embeddings<br/>384-Dim Dense Vectors + HNSW Index")]
     end
 
     subgraph Intelligence_Layer["RAG & Semantic Retrieval Engine"]
@@ -144,7 +144,7 @@ erDiagram
         serial id PK "Auto-increment ID"
         varchar document_id FK "References documents(id)"
         text chunk_text "Semantic text chunk"
-        vector embedding "768-dimensional dense vector"
+        vector embedding "384-dimensional dense vector"
         timestamp created_at "Embedding timestamp"
     }
 ```
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     id SERIAL PRIMARY KEY,
     document_id VARCHAR(64) REFERENCES documents(id) ON DELETE CASCADE,
     chunk_text TEXT NOT NULL,
-    embedding VECTOR(768) NOT NULL,
+    embedding VECTOR(384) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

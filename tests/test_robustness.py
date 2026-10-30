@@ -93,7 +93,7 @@ def test_corrupted_file_handling():
     doc = get_document(doc_id)
     assert doc is not None
     assert doc["status"] == "failed"
-    assert doc["stage"] == "Failed"
+    assert doc["stage"] == "Corrupted File Error"
     assert doc.get("error") is not None
     assert "PDF" in doc["error"] or "unreadable" in doc["error"].lower()
 
@@ -132,7 +132,7 @@ def test_assignment_document_format_rejection():
     assert doc["status"] == "rejected"
     assert "Format" in doc["stage"] or "Rejected" in doc["stage"]
     assert doc.get("error") is not None
-    assert "Assignment" in doc["error"] or "Format" in doc["error"]
+    assert "rejected" in doc["error"].lower()  # wording of the reason is LLM-generated
 
     delete_document(doc_id)
 

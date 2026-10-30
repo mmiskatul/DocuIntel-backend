@@ -20,7 +20,7 @@ from app.models.document_repo import (
 from app.models.result_repo import get_extraction_results, save_extraction_result
 from app.schemas.document import BatchApproveRequest, ApproveRequest
 from app.config import ALLOWED_EXTENSIONS, MAX_FILES_PER_REQUEST, MAX_UPLOAD_MB
-from app.services.pipeline import run_document_pipeline
+from app.services.job_queue import enqueue
 
 logger = logging.getLogger("docuintel.api.documents")
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -60,7 +60,6 @@ class ManualCorrectionRequest(BaseModel):
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 @router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
 async def upload_documents(
-    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
 ):
     """
@@ -108,7 +107,7 @@ async def upload_documents(
         cache_file(doc_id, content, mime, file.filename)
 
         # Queue background processing for time-consuming OCR and AI extraction
-        background_tasks.add_task(run_document_pipeline, doc_id, file.filename, content, mime)
+        enqueue(doc_id, file.filename, content, mime)
 
         results.append({
             "id": doc_id,
@@ -450,7 +449,7 @@ def reject_document(doc_id: str, body: RejectRequest = RejectRequest()):
 @router.post("/{doc_id}/reprocess")
 @router.post("/{doc_id}/retry")
 @router.post("/{doc_id}/re-ocr")
-def reprocess_document(doc_id: str, background_tasks: BackgroundTasks):
+def reprocess_document(doc_id: str):
     """
     REST API endpoint for failed-job reprocessing.
     Queues OCR, multimodal AI extraction, and vector pipeline in the background.
@@ -475,7 +474,7 @@ def reprocess_document(doc_id: str, background_tasks: BackgroundTasks):
         "error": None,
     })
 
-    background_tasks.add_task(run_document_pipeline, doc_id, doc["filename"], content, mime)
+    enqueue(doc_id, doc["filename"], content, mime)
     add_history(doc_id, "Reprocessing Queued", "Background worker queued to re-run OCR and extraction pipeline.")
     return {
         "success": True,
@@ -487,7 +486,7 @@ def reprocess_document(doc_id: str, background_tasks: BackgroundTasks):
 
 
 @router.post("/reprocess-failed")
-def reprocess_all_failed_documents(background_tasks: BackgroundTasks):
+def reprocess_all_failed_documents():
     """
     REST API endpoint to batch reprocess all failed jobs.
     Scans the database for failed documents and re-queues them in the background.
@@ -507,7 +506,7 @@ def reprocess_all_failed_documents(background_tasks: BackgroundTasks):
                 "progress": 0.1,
                 "error": None,
             })
-            background_tasks.add_task(run_document_pipeline, doc_id, doc["filename"], content, mime)
+            enqueue(doc_id, doc["filename"], content, mime)
             requeued.append(doc_id)
 
     return {

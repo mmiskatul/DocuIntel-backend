@@ -57,6 +57,12 @@ def preprocess_image(image_bytes: bytes) -> bytes:
         except Exception as enh_err:
             logger.debug(f"Pillow enhancement skipped: {enh_err}")
 
+        # 4b. Upscale small images so fine print survives (OCR accuracy drops sharply on tiny text)
+        min_dim = 1400
+        if max(img.size) < min_dim:
+            factor = min_dim / max(img.size)
+            img = img.resize((int(img.width * factor), int(img.height * factor)), Image.Resampling.LANCZOS)
+
         # 5. Scale down if huge (>2400px on longest side) to optimize processing while retaining high text clarity
         max_dim = 2400
         if max(img.size) > max_dim:
@@ -85,7 +91,9 @@ def ocr_image(image_bytes: bytes) -> str:
             SystemMessage(
                 content=(
                     "You are a professional OCR engine. Transcribe all text, numbers, labels, and tables visible in this document accurately. "
-                    "Maintain table rows and column layouts. If the image is low-contrast, skewed, blurry, or noisy, do your best to accurately decode every character without summarizing."
+                    "Maintain table rows and column layouts. Transcribe exactly what is printed; never guess, complete, or infer text. "
+                    "If any word or number is blurry, faded, cut off, or otherwise not clearly legible, write [illegible] in its place instead of guessing. "
+                    "Output the transcription only, with no commentary or code fences."
                 )
             ),
             HumanMessage(

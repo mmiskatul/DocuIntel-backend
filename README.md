@@ -15,7 +15,7 @@ It processes multi-modal financial documents (**multi-page digital & scanned PDF
 | **3** | **Architecture diagram & database schema** | Detailed Mermaid diagrams and relational DDL below + in [`ARCHITECTURE_AND_SCHEMA.md`](./ARCHITECTURE_AND_SCHEMA.md). |
 | **4** | **Working backend API and frontend** | Modular FastAPI backend with interactive Swagger (`http://localhost:8000/docs`) and responsive Next.js 16 UI (`http://localhost:3000`). |
 | **5** | **PDF, image, Excel, and CSV pipelines** | Supported formats: Multi-page digital PDFs, scanned PDFs (Vision OCR), Images (PNG/JPG/TIFF), Multi-sheet Excel (`.xlsx` & `.xls`), and CSVs. |
-| **6** | **Automated tests and test results** | Full test suite: 19 automated tests in `tests/` covering validation, APIs, database, pgvector search, and dynamic rejection (100% pass rate). |
+| **6** | **Automated tests and test results** | Full test suite: 39 automated tests in `tests/` covering validation, APIs, database, pgvector search, and dynamic rejection (100% pass rate). |
 | **7** | **Evaluation report with measured metrics** | Exhaustive benchmark report with actual metrics in [`EVALUATION_REPORT.md`](./EVALUATION_REPORT.md). |
 | **8** | **Recorded walkthrough of the working application** | Walkthrough demonstration script & step-by-step recording guide included below. |
 | **9** | **AI prompts & disclosure of AI development** | Complete disclosure of extraction prompts, anti-hallucination constraints, and AI-assisted tooling below. |
@@ -56,7 +56,7 @@ flowchart TD
         T_Docs[("documents (Metadata, Stages, OCR Text)")]
         T_Results[("extraction_results (Headers, Line Items, Errors)")]
         T_History[("processing_history (Audit Trail)")]
-        T_Embeddings[("document_embeddings (768-dim HNSW Cosine Index)")]
+        T_Embeddings[("document_embeddings (384-dim HNSW Cosine Index)")]
     end
 
     Upload -->|Multipart Upload| Endpoints
@@ -127,7 +127,7 @@ erDiagram
         serial id PK
         varchar document_id FK
         text chunk_text
-        vector embedding "768-dim vector (HNSW index)"
+        vector embedding "384-dim vector (HNSW index)"
     }
 ```
 
@@ -265,8 +265,8 @@ python tests/evaluate_benchmark.py
 ### Measured Benchmark Summary (Task 7)
 * **Document Success Rate**: **100.0%** (SLA $\ge 90\%$)
 * **Failure & Rejection Rate**: **100.0%** (SLA $\ge 90\%$)
-* **Overall Field Accuracy**: **96.4%** (SLA $\ge 90\%$)
-* **Average Processing Latency**: **4.82s** per document
+* **Overall Field Accuracy**: **100%** on a 7-document synthetic benchmark (see EVALUATION_REPORT.md for limits)
+* **Average Processing Latency**: **~10-12 s** per document (measured, includes remote DB + LLM round-trips)
 * See [`EVALUATION_REPORT.md`](./EVALUATION_REPORT.md) for full metrics and field breakdown.
 
 ---
@@ -310,7 +310,7 @@ In compliance with Task 9:
 * **AI Coding Assistance**: Google Antigravity & LLM pair programming assistants were used during development for accelerated scaffolding, test dataset synthesis, and refactoring.
 * **Core Application AI Models**:
   * `gpt-4o-mini`: Utilized for vision OCR, structured Pydantic JSON extraction, and dynamic document classification.
-  * `text-embedding-3-small`: Utilized for 768-dimensional vector embeddings stored in PostgreSQL `pgvector`.
+  * `text-embedding-3-small`: Utilized for 384-dimensional vector embeddings stored in PostgreSQL `pgvector`.
 * **Zero-Hallucination Guardrails**: All extraction schemas use strict Pydantic models with explicit `null` defaults; downstream deterministic validation code cross-checks all math against raw line item numbers.
 
 ---
@@ -341,3 +341,13 @@ When recording the walkthrough video, follow this recommended sequence to demons
    - Perform a **Keyword Search** (e.g. searching for a vendor name or invoice number).
    - Switch to **Smart Search** (Semantic Vector Search) to find documents based on natural language meaning.
    - Switch to **⚡ AI Document Analyst**: ask a natural language question (e.g., *"What is our total spend with Acme Cloud?"* or *"What are the payment terms?"*) and show the synthesized answer with grounded document citations.
+
+---
+
+## Operations notes
+
+* **Authentication**: set `API_KEY` in the backend `.env`; every `/api` request must then send `X-API-Key` (or `Authorization: Bearer`). Set the same value as `BACKEND_API_KEY` in the frontend (server-side only; the Next.js proxy adds it, so the browser never sees it). `/health` stays public. If `API_KEY` is empty the API is open (development only; a warning is logged).
+* **Background jobs**: uploads are persisted to PostgreSQL first, then processed by a bounded worker pool (`WORKER_CONCURRENCY`, default 3). On startup, documents left in `queued`/`processing` (crash/redeploy) are re-queued automatically. This is a PostgreSQL-backed design instead of Redis/BullMQ to avoid an extra service; multi-instance deployments need row locking (`SKIP LOCKED`) before recovery.
+* **Limits** (env): `MAX_UPLOAD_MB`, `MAX_FILES_PER_REQUEST`, `MAX_OCR_PAGES`, `MAX_INDEX_CHUNKS`, `EXTRACT_HEAD_CHARS`, `EXTRACT_TAIL_CHARS`, `CORS_ORIGINS`.
+* **Data handling**: document text and images are sent to OpenAI for OCR, extraction and embeddings.
+* **Low-quality scans**: OCR emits `[illegible]` for unreadable text; such documents are routed to manual review (`LOW_OCR_QUALITY`).
