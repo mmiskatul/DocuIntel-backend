@@ -174,3 +174,4 @@ def test_semantic_vector_search():
         assert matching[0]["supplier_name"] == "Equinix High-Speed Interconnects"
     finally:
         delete_document(doc_id)
+
