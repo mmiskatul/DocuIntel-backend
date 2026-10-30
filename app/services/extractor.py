@@ -26,19 +26,28 @@ class LineItemSchema(BaseModel):
 
 
 class DocumentExtractionSchema(BaseModel):
-    document_title: str = Field(description="Document title or main header as written in document")
+    document_title: str = Field(description="Document title, main header, or file heading as written in document")
     document_type: str = Field(
-        description="Classified type of document, e.g. Vendor Invoice, Commercial Receipt, Freight Waybill, Assignment Task, Project Specification, Academic Paper, Report"
+        description=(
+            "Precisely classify what this document actually is based on its real content. "
+            "Examples: Commercial Invoice, Freight Waybill, Purchase Order, Retail Receipt, Utility Bill, "
+            "Curriculum Vitae / Resume, Legal Agreement / Contract, Academic Research Paper, Technical Specification, "
+            "Project Brief / Assignment Task, Medical Health Record, Product User Guide, Marketing Brochure, Bank Account Statement, Personal Letter, etc."
+        )
     )
     is_supported_format: bool = Field(
         description=(
-            "Set to TRUE ONLY IF the document is a financial billing document (Invoice, Commercial Receipt, Freight Waybill, Bill of Lading, Purchase Order, Utility Bill). "
-            "Set to FALSE if the document is an Assignment Task, Project Specification, Coding Challenge, Homework, Syllabus, CV, Resume, Article, or non-billing document."
+            "Set to TRUE IF AND ONLY IF the document is an authentic commercial billing document intended for financial payment processing "
+            "(Invoice, Commercial Receipt, Freight Waybill, Bill of Lading, Purchase Order, Utility Bill). "
+            "Set to FALSE for any other document type (Resume, Contract, Paper, Manual, Letter, Assignment, Medical Record, Report, etc.)."
         )
     )
     rejection_reason: Optional[str] = Field(
         default=None,
-        description="If is_supported_format is FALSE, explain clearly why it does not match the invoice/receipt/waybill format (e.g. 'Classified as Assignment Task Specification; missing financial transaction data')."
+        description=(
+            "If is_supported_format is FALSE, provide a detailed, factual, and dynamic explanation of what the document actually is and why it fails commercial intake. "
+            "Do NOT use canned or hardcoded phrases. Mention the specific identified document type, subject, and the absence of billing line items or payable balances."
+        )
     )
 
     # Core required extraction fields (Strictly no invented values!)
@@ -105,10 +114,19 @@ EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
             "   - NEVER invent, fabricate, guess, or extrapolate values.\n"
             "   - If any field (invoice_number, invoice_date, supplier_name, customer_name, subtotal, tax, total) is missing, ambiguous, or uncertain in the source document, you MUST set that field to null.\n"
             "   - If line items are not present or cannot be parsed with certainty, return an empty array []. DO NOT create dummy items.\n\n"
-            "2. FORMAT VALIDATION & AUTOMATIC REJECTION:\n"
-            "   - If the document is NOT a financial billing document (e.g. it is an Assignment Task, Project Specification, Coding Test, Homework, Resume, Syllabus, or non-commercial text), "
-            "you MUST set is_supported_format=False and provide a clear rejection_reason (e.g. 'Classified as Assignment Task Specification; missing financial transaction data').\n"
-            "   - When is_supported_format is False, all financial fields (invoice_number, subtotal, tax, total, customer_name, line_items) MUST be null or empty.\n\n"
+            "2. DYNAMIC DOCUMENT CLASSIFICATION & FORMAT VALIDATION:\n"
+            "   - Carefully analyze the actual content of the text to identify what type of document it truly is.\n"
+            "   - If the document is a valid commercial billing document (Invoice, Commercial Receipt, Freight Waybill, Bill of Lading, Purchase Order, Utility Bill):\n"
+            "     Set is_supported_format=True, rejection_reason=null, and extract all stated fields.\n"
+            "   - If the document is NOT a billing document (for example: a Resume/CV, Legal Contract, Academic Article, Engineering Spec, Medical Record, Product Manual, Personal Letter, Assignment Task, etc.):\n"
+            "     Set is_supported_format=False.\n"
+            "     Dynamically construct a clear, specific rejection_reason explaining what the document actually is and what it lacks. Examples of dynamic reasons:\n"
+            "       * Resume/CV: 'Rejected: Document identified as a Curriculum Vitae / Resume for [Candidate/Role]. Contains employment background rather than commercial billing data.'\n"
+            "       * Legal Agreement: 'Rejected: Document identified as a Legal Contract / Agreement. Contains legal clauses and terms but lacks itemized billing line items or payable amounts.'\n"
+            "       * Research Article: 'Rejected: Document identified as an Academic Research Paper. Contains scholarly research literature rather than invoice or financial transaction data.'\n"
+            "       * Medical Record: 'Rejected: Document identified as a Medical Health Record / Clinical Report. Lacks invoice number and commercial payment transactions.'\n"
+            "       * Project / Task Brief: 'Rejected: Document identified as a Project Specification / Task Description. Contains task instructions rather than commercial invoice billing.'\n"
+            "     When is_supported_format is False, all financial fields (invoice_number, subtotal, tax, total, customer_name, line_items) MUST be null or empty.\n\n"
             "3. NUMERIC FIELDS:\n"
             "   - subtotal, tax, and total must be raw float numbers (e.g., 2890.00, not '$2,890.00').\n"
             "   - If tax is not specified or 0, set tax to 0.0 or null. DO NOT guess tax rates."
@@ -293,16 +311,8 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
     lower_txt = text.lower()
 
     # ==========================================================================
-    # Strict Format Validation Guard (Deterministic Keyword & Structure Analysis)
+    # Dynamic Document Type Classification & Format Guard
     # ==========================================================================
-    assignment_signals = [
-        "assignment", "task brief", "project specification", "homework", "take-home",
-        "coding challenge", "submission instructions", "rubric", "problem statement",
-        "deliverables", "evaluation criteria", "careguidebdtask", "task description",
-        "project overview", "requirements:", "acceptance criteria", "test case"
-    ]
-    is_assignment = any(sig in lower_fn or sig in lower_txt[:1500] for sig in assignment_signals)
-
     billing_signals = [
         "invoice", "receipt", "waybill", "bill of lading", "bill to:", "sold to:",
         "remit to", "amount due", "balance due", "tax invoice", "subtotal", "vat reg"
@@ -311,24 +321,66 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
 
     is_supported = extracted.get("is_supported_format", True)
     rejection_reason = extracted.get("rejection_reason")
+    raw_doc_type = extracted.get("document_type") or "Document"
 
-    # If assignment keywords detected without valid billing context:
-    if is_assignment and not has_billing_signals:
-        is_supported = False
-        rejection_reason = "Format Validation Failed: Document classified as an Assignment Task / Project Specification. The system only accepts standardized Invoices, Waybills, and Receipts."
+    # Check if document lacks commercial billing totals
+    has_no_financial_data = (
+        extracted.get("total") is None 
+        and extracted.get("invoice_number") is None 
+        and len(extracted.get("line_items", [])) == 0
+    )
 
-    # If document has no total, no invoice number, no line items, and non-billing type:
-    doc_type = (extracted.get("document_type") or "").lower()
-    if not any(t in doc_type for t in ["invoice", "receipt", "waybill", "bill"]):
-        if extracted.get("total") is None and extracted.get("invoice_number") is None and len(extracted.get("line_items", [])) == 0:
+    # Dynamic signals for specific real-world non-billing categories
+    is_resume = any(k in lower_txt[:2000] for k in ["curriculum vitae", "resume", "work experience", "employment history", "skills & tools", "education:", "bachelor of", "master of"]) or "resume" in lower_fn or "cv" in lower_fn
+    is_contract = any(k in lower_txt[:2000] for k in ["non-disclosure agreement", "confidentiality agreement", "terms and conditions", "whereas the parties", "governing law", "parties agree that"]) or "agreement" in lower_fn or "contract" in lower_fn or "nda" in lower_fn
+    is_academic = any(k in lower_txt[:2000] for k in ["abstract\n", "ieee", "arxiv", "doi:", "references\n[1]", "methodology", "literature review", "journal of"]) or "paper" in lower_fn
+    is_spec = any(k in lower_txt[:2000] for k in ["system architecture", "software requirements specification", "technical specification", "api documentation", "database schema"]) or "spec" in lower_fn or "architecture" in lower_fn
+    is_medical = any(k in lower_txt[:2000] for k in ["patient name:", "diagnosis:", "prescription:", "clinical summary", "blood pressure", "physician:"]) or "medical" in lower_fn or "clinical" in lower_fn
+    is_assignment = any(k in lower_txt[:2000] for k in ["assignment", "coding challenge", "homework", "take-home test", "rubric", "submission instructions", "deliverables:"]) or "assignment" in lower_fn or "homework" in lower_fn
+
+    if not has_billing_signals or has_no_financial_data:
+        if is_resume:
+            is_supported = False
+            raw_doc_type = "Curriculum Vitae / Resume"
+            if not rejection_reason or "assignment" in rejection_reason.lower():
+                rejection_reason = f"Rejected: Document identified as a Curriculum Vitae / Resume ({extracted.get('document_title') or 'Candidate Profile'}). Contains professional qualifications and career background rather than commercial billing data."
+        elif is_contract:
+            is_supported = False
+            raw_doc_type = "Legal Contract / Agreement"
+            if not rejection_reason or "assignment" in rejection_reason.lower():
+                rejection_reason = f"Rejected: Document identified as a Legal Contract / Agreement ({extracted.get('document_title') or 'Legal Document'}). Contains contractual terms rather than an itemized payable billing invoice."
+        elif is_academic:
+            is_supported = False
+            raw_doc_type = "Academic Research Paper"
+            if not rejection_reason or "assignment" in rejection_reason.lower():
+                rejection_reason = f"Rejected: Document identified as an Academic Research Paper / Journal Article. Contains scholarly research literature rather than commercial invoice billing."
+        elif is_spec:
+            is_supported = False
+            raw_doc_type = "Technical Architecture Specification"
+            if not rejection_reason or "assignment" in rejection_reason.lower():
+                rejection_reason = f"Rejected: Document identified as a Technical System Specification / Architecture Design Document. Lacks financial billing transactions or payable items."
+        elif is_medical:
+            is_supported = False
+            raw_doc_type = "Medical Health Record"
+            if not rejection_reason or "assignment" in rejection_reason.lower():
+                rejection_reason = f"Rejected: Document identified as a Clinical / Medical Health Record. Contains patient health information rather than commercial invoice billing."
+        elif is_assignment:
+            is_supported = False
+            raw_doc_type = "Technical Specification / Task Brief"
+            if not rejection_reason or "format validation failed" in rejection_reason.lower():
+                rejection_reason = f"Rejected: Document identified as a Project Specification / Task Description ({extracted.get('document_title') or 'Task Document'}). Contains task requirements rather than commercial invoice billing."
+        elif has_no_financial_data and not any(t in raw_doc_type.lower() for t in ["invoice", "receipt", "waybill", "bill"]):
             is_supported = False
             if not rejection_reason:
-                rejection_reason = f"Format Mismatch: Document type '{extracted.get('document_type', 'General Document')}' is unsupported. Required: Invoice, Waybill, or Receipt with financial totals."
+                rejection_reason = f"Rejected: Document classified as '{raw_doc_type}'. Missing commercial transaction data (no invoice number, line items, or payable total detected)."
 
+    # If format rejected, format cleanly
     if not is_supported:
+        if not rejection_reason:
+            rejection_reason = f"Rejected: Document classified as '{raw_doc_type}'. Missing commercial invoice or billing transaction data."
         extracted["is_supported_format"] = False
-        extracted["rejection_reason"] = rejection_reason or "Document does not conform to supported financial invoice/waybill format."
-        # Ensure all financial fields are strictly null when rejected (zero hallucination)
+        extracted["document_type"] = raw_doc_type
+        extracted["rejection_reason"] = rejection_reason
         extracted["invoice_number"] = None
         extracted["subtotal"] = None
         extracted["tax"] = None
@@ -339,7 +391,7 @@ def extract_structured_fields(text: str, filename: str) -> Dict[str, Any]:
             "code": "FORMAT_REJECTED",
             "severity": "fatal",
             "field": "document_type",
-            "message": extracted["rejection_reason"],
+            "message": rejection_reason,
         })
 
     # Post-Extraction Validation for Supported Billing Documents:
