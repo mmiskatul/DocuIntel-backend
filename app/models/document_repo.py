@@ -182,8 +182,10 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                 _add_timing(doc)
                 cur.execute("SELECT * FROM extraction_results WHERE document_id = %s ORDER BY id DESC LIMIT 1;", (doc["id"],))
                 r = cur.fetchone()
-                doc["invoice_count"] = 1 if r else 0
-                doc["needs_review"] = r.get("needs_review", False) if r else False
+                cur.execute("SELECT count(*) AS n, COALESCE(bool_or(needs_review AND NOT reviewed), false) AS pending FROM extraction_results WHERE document_id = %s;", (doc["id"],))
+                agg = cur.fetchone()
+                doc["invoice_count"] = int(agg["n"] or 0)
+                doc["needs_review"] = bool(agg["pending"])
                 doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else None
                 doc["summary"] = {
                     "invoice_number": r.get("invoice_number") if r else None,
@@ -369,6 +371,10 @@ def get_stats() -> Dict[str, Any]:
             conf_row = cur.fetchone()
             avg_conf = float(conf_row["avg_conf"]) if conf_row and conf_row.get("avg_conf") is not None else 0.0
 
+            cur.execute("SELECT AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) * 1000) AS ms FROM documents WHERE status IN ('completed', 'needs_review');")
+            ms_row = cur.fetchone()
+            avg_ms = int(ms_row["ms"]) if ms_row and ms_row.get("ms") is not None else None
+
             completed_count = counts.get("completed", 0)
             completed_pct = round((completed_count / total * 100), 1) if total > 0 else 0.0
 
@@ -380,7 +386,9 @@ def get_stats() -> Dict[str, Any]:
                     "processing": counts.get("processing", 0),
                     "queued": counts.get("queued", 0),
                     "failed": counts.get("failed", 0),
+                    "rejected": counts.get("rejected", 0),
                 },
+                "avg_processing_ms": avg_ms,
                 "completed_percentage": completed_pct,
                 "open_review_items": review_count,
                 "avg_confidence": avg_conf,

@@ -99,32 +99,40 @@ async def upload_documents(
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(status_code=413, detail=f"Too many files; maximum is {MAX_FILES_PER_REQUEST} per request.")
 
-    results = []
+    # 1. Validate and read everything first, so a bad file rejects the request before anything is stored
+    prepared = []
     for file in files:
         name = (file.filename or "").replace("\\", "/").split("/")[-1]
         if not name.lower().endswith(ALLOWED_EXTENSIONS):
             raise HTTPException(status_code=415, detail=f"Unsupported file type: '{name}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
-        file.filename = name
         content = await file.read()
         if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
             raise HTTPException(status_code=413, detail=f"'{name}' exceeds the {MAX_UPLOAD_MB} MB limit.")
-        doc_id = str(uuid.uuid4())
-        mime = file.content_type or ("application/pdf" if file.filename.lower().endswith(".pdf") else "application/octet-stream")
+        mime = file.content_type or ("application/pdf" if name.lower().endswith(".pdf") else "application/octet-stream")
+        prepared.append((str(uuid.uuid4()), name, content, mime))
 
-        # Keep the original in Cloudinary while it awaits review (deleted on approval). If Cloudinary is not set up,
-        # or the call fails, fall back to keeping it in the database so the upload never fails because of storage.
-        cloud_id = None
-        if cloud_storage.enabled():
+    # 2. Keep each original in Cloudinary while it awaits review (deleted on approval). The uploads run side by side.
+    #    If Cloudinary is not set up, or a call fails, that file falls back to the database so an upload never fails on storage.
+    gate = asyncio.Semaphore(6)
+
+    async def _to_cloud(doc_id: str, name: str, content: bytes) -> Optional[str]:
+        if not cloud_storage.enabled():
+            return None
+        async with gate:
             try:
-                cloud_id = await asyncio.to_thread(cloud_storage.upload, doc_id, file.filename, content)
+                return await asyncio.to_thread(cloud_storage.upload, doc_id, name, content)
             except Exception as exc:
-                logger.warning("Cloudinary upload failed for %s (%s); keeping the file in the database instead.", file.filename, exc)
-        b64_content = None if cloud_id else base64.b64encode(content).decode("utf-8")
+                logger.warning("Cloudinary upload failed for %s (%s); keeping the file in the database instead.", name, exc)
+                return None
 
-        # Save initial document record
+    cloud_ids = await asyncio.gather(*[_to_cloud(d, n, c) for d, n, c, _ in prepared])
+
+    # 3. Record each document and queue it for background processing
+    results = []
+    for (doc_id, name, content, mime), cloud_id in zip(prepared, cloud_ids):
         save_document({
             "id": doc_id,
-            "filename": file.filename,
+            "filename": name,
             "file_type": mime,
             "size_bytes": len(content),
             "status": "queued",
@@ -132,25 +140,12 @@ async def upload_documents(
             "progress": 0.1,
             "page_count": 1,
             "pages_done": 0,
-            "file_base64": b64_content,
+            "file_base64": None if cloud_id else base64.b64encode(content).decode("utf-8"),
             "cloud_public_id": cloud_id,
         })
-
-        add_history(
-            doc_id,
-            "Document Uploaded",
-            f"File {file.filename} ({len(content) / 1024:.1f} KB) queued for intake.",
-        )
-
-        # Queue background processing for time-consuming OCR and AI extraction
-        enqueue(doc_id, file.filename, content, mime)
-
-        results.append({
-            "id": doc_id,
-            "filename": file.filename,
-            "status": "queued",
-            "stage": "Uploaded",
-        })
+        add_history(doc_id, "Document Uploaded", f"File {name} ({len(content) / 1024:.1f} KB) queued for intake.")
+        enqueue(doc_id, name, content, mime)
+        results.append({"id": doc_id, "filename": name, "status": "queued", "stage": "Uploaded"})
 
     return results
 
