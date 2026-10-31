@@ -1,9 +1,10 @@
 """Core database connection management for Supabase PostgreSQL."""
 import logging
+import time
 from typing import Optional
 import psycopg2
 from psycopg2 import pool
-from app.config import DATABASE_URL
+from app.config import DATABASE_URL, DB_POOL_MAX, DB_POOL_WAIT_SECONDS
 
 logger = logging.getLogger("docuintel.core.database")
 
@@ -20,7 +21,7 @@ def init_db():
     try:
         db_pool = pool.ThreadedConnectionPool(
             minconn=1,
-            maxconn=10,
+            maxconn=DB_POOL_MAX,
             dsn=DATABASE_URL,
             sslmode="require",
         )
@@ -31,12 +32,23 @@ def init_db():
 
 
 def get_conn():
-    """Retrieves a dedicated connection from the connection pool."""
+    """Retrieves a dedicated connection from the connection pool.
+
+    psycopg2's pool raises at once when every connection is busy; under load (a batch of uploads plus UI polling)
+    that turned into HTTP 500s. Wait briefly for a connection to be released instead.
+    """
     if db_pool is None:
         init_db()
     if db_pool is None:
         raise RuntimeError("Database pool is not available.")
-    return db_pool.getconn()
+    deadline = time.monotonic() + DB_POOL_WAIT_SECONDS
+    while True:
+        try:
+            return db_pool.getconn()
+        except pool.PoolError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def release_conn(conn):

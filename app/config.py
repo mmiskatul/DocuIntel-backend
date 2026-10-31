@@ -29,6 +29,8 @@ MAX_INDEX_CHUNKS = int(os.getenv("MAX_INDEX_CHUNKS", "200"))
 # Security & workers
 API_KEY = os.getenv("API_KEY", "")  # when set, every /api request must send it (X-API-Key or Bearer)
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "3"))
+DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "12"))
+DB_POOL_WAIT_SECONDS = float(os.getenv("DB_POOL_WAIT_SECONDS", "30"))
 MAX_INVOICES_PER_DOCUMENT = int(os.getenv("MAX_INVOICES_PER_DOCUMENT", "500"))
 EXTRACTION_PARALLELISM = int(os.getenv("EXTRACTION_PARALLELISM", "4"))
 
