@@ -270,6 +270,26 @@ def stream_document_file(doc_id: str):
     )
 
 
+@router.get("/{doc_id}/page/{page}/image")
+def document_page_image(doc_id: str, page: int, scale: float = 1.6):
+    """One page of the original as a PNG (PDFs and images), for the in-app preview."""
+    from app.services.page_render import PageOutOfRange, PreviewUnavailable, render_page_png
+
+    stored = get_cached_file(doc_id) or get_document_file(doc_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="Original file not found")
+    try:
+        png = render_page_png(stored["bytes"], stored["mimetype"], stored["filename"], page, scale)
+    except PageOutOfRange as exc:
+        raise HTTPException(status_code=404, detail=f"Page not found ({exc})")
+    except PreviewUnavailable:
+        raise HTTPException(status_code=415, detail="This file type cannot be previewed as an image")
+    except Exception as exc:
+        logger.warning("Preview render failed for %s: %s", doc_id, exc)
+        raise HTTPException(status_code=422, detail="The file could not be rendered (it may be corrupt)")
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
+
+
 # ==============================================================================
 # 3. EXTRACTED RESULTS
 # ==============================================================================
