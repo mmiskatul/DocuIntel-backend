@@ -88,6 +88,13 @@ def ensure_schema():
             cur.execute("""
                 ALTER TABLE documents ADD COLUMN IF NOT EXISTS extracted_text TEXT;
             """)
+            # Original file kept in Cloudinary while awaiting review; both are cleared once the document is approved
+            cur.execute("""
+                ALTER TABLE documents ADD COLUMN IF NOT EXISTS cloud_public_id TEXT;
+            """)
+            cur.execute("""
+                ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_removed_at TIMESTAMPTZ;
+            """)
 
             # 2. Extraction results table (structured results & validation errors)
             cur.execute("""

@@ -83,14 +83,14 @@ def recover_stuck_jobs(stale_seconds: Optional[int] = None, limit: int = 50) -> 
                 UPDATE documents SET status = 'queued', stage = 'Recovered After Restart', progress = 0.1, updated_at = NOW()
                 WHERE id IN (
                     SELECT id FROM documents
-                    WHERE status IN ('queued', 'processing') AND file_base64 IS NOT NULL
+                    WHERE status IN ('queued', 'processing') AND (file_base64 IS NOT NULL OR cloud_public_id IS NOT NULL)
                       AND updated_at < NOW() - make_interval(secs => %s)
                       AND NOT (id::text = ANY(%s))
                     ORDER BY created_at ASC
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
                 )
-                RETURNING id, filename, file_type, file_base64;
+                RETURNING id, filename, file_type, file_base64, cloud_public_id;
             """, (stale, mine, limit))
             rows = cur.fetchall()
             conn.commit()
@@ -100,8 +100,13 @@ def recover_stuck_jobs(stale_seconds: Optional[int] = None, limit: int = 50) -> 
     count = 0
     for row in rows:
         try:
-            content = base64.b64decode(row["file_base64"])
+            if row["file_base64"]:
+                content = base64.b64decode(row["file_base64"])
+            else:
+                from app.services import cloud_storage
+                content = cloud_storage.download(row["cloud_public_id"])
         except Exception:
+            logger.warning("Could not load the file of job %s for recovery", row["id"])
             continue
         add_history(row["id"], "Job Recovered", "Interrupted job re-queued automatically (its previous worker stopped responding).")
         enqueue(row["id"], row["filename"], content, row["file_type"] or "application/pdf")

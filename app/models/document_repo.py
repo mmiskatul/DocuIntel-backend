@@ -11,6 +11,8 @@ logger = logging.getLogger("docuintel.models.document")
 # Columns returned to API clients. The stored file (file_base64) and the full text are deliberately excluded:
 # they can be megabytes per document and the UI polls these queries every couple of seconds.
 _PUBLIC_COLUMNS = ["id", "filename", "file_type", "size_bytes", "status", "stage", "progress", "page_count", "pages_done", "error", "created_at", "updated_at"]
+# Whether the original can still be read, and whether it was deliberately deleted after approval (cheap: no file bytes are read)
+_ORIGINAL_FLAGS = "(file_base64 IS NOT NULL OR cloud_public_id IS NOT NULL) AS original_available, (file_removed_at IS NOT NULL) AS original_removed"
 _TERMINAL = ("completed", "needs_review", "failed", "rejected")
 
 _file_cache: Dict[str, Dict[str, Any]] = {}
@@ -33,13 +35,22 @@ def get_document_file(doc_id: str) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT filename, file_type, file_base64 FROM documents WHERE id = %s;", (doc_id,))
+            cur.execute("SELECT filename, file_type, file_base64, cloud_public_id FROM documents WHERE id = %s;", (doc_id,))
             row = cur.fetchone()
-            if not row or not row.get("file_base64"):
-                return None
-            return {"bytes": base64.b64decode(row["file_base64"]), "mimetype": row.get("file_type") or "application/octet-stream", "filename": row["filename"]}
     finally:
         release_conn(conn)
+    if not row:
+        return None
+    mimetype = row.get("file_type") or "application/octet-stream"
+    if row.get("file_base64"):
+        return {"bytes": base64.b64decode(row["file_base64"]), "mimetype": mimetype, "filename": row["filename"]}
+    if row.get("cloud_public_id"):
+        try:
+            from app.services import cloud_storage
+            return {"bytes": cloud_storage.download(row["cloud_public_id"]), "mimetype": mimetype, "filename": row["filename"]}
+        except Exception as exc:
+            logger.error(f"Could not fetch {doc_id} from Cloudinary: {exc}")
+    return None
 
 
 def cache_file(doc_id: str, content: bytes, mimetype: str, filename: str):
@@ -65,7 +76,7 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
             if exists:
                 updates = []
                 params = []
-                for field in ["status", "stage", "progress", "page_count", "pages_done", "error", "file_base64", "extracted_text", "filename", "file_type", "size_bytes"]:
+                for field in ["status", "stage", "progress", "page_count", "pages_done", "error", "file_base64", "cloud_public_id", "extracted_text", "filename", "file_type", "size_bytes"]:
                     if field in doc and doc[field] is not None:
                         updates.append(f"{field} = %s")
                         params.append(doc[field])
@@ -78,8 +89,8 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                 return dict(res) if res else doc
             else:
                 query = """
-                    INSERT INTO documents (id, filename, file_type, size_bytes, status, stage, progress, page_count, pages_done, error, file_base64, extracted_text, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    INSERT INTO documents (id, filename, file_type, size_bytes, status, stage, progress, page_count, pages_done, error, file_base64, cloud_public_id, extracted_text, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING *;
                 """
                 cur.execute(query, (
@@ -94,6 +105,7 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                     doc.get("pages_done", 0),
                     doc.get("error"),
                     doc.get("file_base64"),
+                    doc.get("cloud_public_id"),
                     doc.get("extracted_text"),
                 ))
                 res = cur.fetchone()
@@ -115,7 +127,7 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"SELECT {', '.join(_PUBLIC_COLUMNS)} FROM documents WHERE id = %s;", (doc_id,))
+            cur.execute(f"SELECT {', '.join(_PUBLIC_COLUMNS)}, {_ORIGINAL_FLAGS} FROM documents WHERE id = %s;", (doc_id,))
             res = cur.fetchone()
             if not res:
                 return None
@@ -170,7 +182,7 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
 
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
-                SELECT {", ".join("d." + c for c in _PUBLIC_COLUMNS)} FROM documents d
+                SELECT {", ".join("d." + c for c in _PUBLIC_COLUMNS)}, {_ORIGINAL_FLAGS} FROM documents d
                 {where_clause}
                 ORDER BY d.created_at DESC
                 LIMIT %s OFFSET %s;
@@ -185,7 +197,7 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                 r = cur.fetchone()
                 doc["invoice_count"] = 1 if r else 0
                 doc["needs_review"] = r.get("needs_review", False) if r else False
-                doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else (0.82 if doc.get("status") == "needs_review" else 0.96)
+                doc["confidence"] = float(r["overall_confidence"]) if r and r.get("overall_confidence") is not None else None
                 doc["summary"] = {
                     "invoice_number": r.get("invoice_number") if r else None,
                     "supplier_name": r.get("supplier_name") if r else None,
@@ -201,7 +213,53 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
         release_conn(conn)
 
 
+def release_original(doc_id: str) -> bool:
+    """Discards the stored original once a document is approved: the Cloudinary copy is deleted and the pointer
+    (or the database fallback copy) is cleared. The extracted data and text stay. Returns True when no original
+    remains afterwards; False if Cloudinary could not be reached (the pointer is kept so it can be retried)."""
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT cloud_public_id, file_base64 IS NOT NULL AS has_b64, file_removed_at IS NOT NULL AS removed FROM documents WHERE id = %s;", (doc_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            if not row["cloud_public_id"] and not row["has_b64"]:
+                return True  # nothing stored (already removed, or never kept)
+            if row["cloud_public_id"]:
+                from app.services import cloud_storage
+                if not cloud_storage.safe_delete(row["cloud_public_id"]):
+                    logger.warning(f"Original of {doc_id} could not be deleted from Cloudinary; keeping the pointer to retry.")
+                    return False
+            cur.execute("UPDATE documents SET file_base64 = NULL, cloud_public_id = NULL, file_removed_at = NOW() WHERE id = %s;", (doc_id,))
+            conn.commit()
+            _file_cache.pop(doc_id, None)
+            return True
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"release_original error: {exc}")
+        return False
+    finally:
+        release_conn(conn)
+
+
+def _cloud_ids(doc_id: Optional[str] = None) -> List[str]:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if doc_id:
+                cur.execute("SELECT cloud_public_id FROM documents WHERE id = %s AND cloud_public_id IS NOT NULL;", (doc_id,))
+            else:
+                cur.execute("SELECT cloud_public_id FROM documents WHERE cloud_public_id IS NOT NULL;")
+            return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+    finally:
+        release_conn(conn)
+
+
 def delete_document(doc_id: str) -> bool:
+    cloud_ids = _cloud_ids(doc_id)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -212,6 +270,9 @@ def delete_document(doc_id: str) -> bool:
             conn.commit()
             _file_cache.pop(doc_id, None)
             _history_store.pop(doc_id, None)
+            from app.services import cloud_storage
+            for cid in cloud_ids:
+                cloud_storage.safe_delete(cid)
             return True
     except Exception as exc:
         conn.rollback()
@@ -222,6 +283,7 @@ def delete_document(doc_id: str) -> bool:
 
 
 def delete_all_documents() -> bool:
+    cloud_ids = _cloud_ids()
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -232,6 +294,9 @@ def delete_all_documents() -> bool:
             conn.commit()
             _file_cache.clear()
             _history_store.clear()
+            from app.services import cloud_storage
+            for cid in cloud_ids:
+                cloud_storage.safe_delete(cid)
             return True
     except Exception as exc:
         conn.rollback()

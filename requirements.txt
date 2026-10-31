@@ -19,3 +19,4 @@ xlrd>=2.0.1
 python-multipart>=0.0.18
 python-dotenv>=1.0.1
 requests>=2.32.3
+cloudinary>=1.41.0

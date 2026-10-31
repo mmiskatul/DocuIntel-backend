@@ -357,3 +357,16 @@ When recording the walkthrough video, follow this recommended sequence to demons
 * **Search**: `GET /api/search?q=...&mode=keyword|semantic|hybrid`. Keyword matches every word against filename, invoice number, supplier, customer and extracted text; semantic uses pgvector cosine similarity over text chunks; hybrid merges both rankings with reciprocal-rank fusion (a document found by both ranks highest and reports `matched_by`). Every hit carries the real document record. `GET /api/search/rag?q=...` answers a question from the retrieved passages with citations (model: `gpt-4o-mini`).
 * **Frontend proxy**: the browser only calls the built-in `/api` route of the Next.js app, which adds `BACKEND_API_KEY` server-side. Do **not** set `NEXT_PUBLIC_API_URL`, and do not add a `rewrites()` rule to `next.config.ts`: a rewrite is applied before the proxy route and would send requests to the backend without the key.
 * **Payload size**: list and detail endpoints never return the stored file or the full extracted text (the original is served by `GET /api/documents/{id}/file`).
+
+### Original files: kept only while a document awaits review
+Set `CLOUDINARY_URL` (see `.env.example`) and every uploaded file is stored in a private Cloudinary folder (as an
+*authenticated* asset: no public URL, fetched only through URLs this server signs). The database keeps just a pointer.
+
+- **Preview and "Read again"** fetch the file from Cloudinary on demand; the page preview is drawn by the backend.
+- **When a document is accepted** (approve, reconcile, or a manual correction that clears the last flag) the file is
+  deleted from Cloudinary and the pointer cleared. The extracted values, the page text and the search index are kept;
+  the viewer then says the original was deleted, and the document cannot be read again.
+- **Deleting a document** also deletes its Cloudinary file. If a Cloudinary delete fails, the pointer is kept so it can be retried.
+- **Not configured, or Cloudinary fails** (for example a file over the free plan's raw-file limit): the file is kept in
+  the database instead, so an upload never fails because of storage. Those copies are discarded on approval as well.
+- Crash recovery works the same way: an interrupted job re-reads its file from Cloudinary.

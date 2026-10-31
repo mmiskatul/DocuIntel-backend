@@ -1,4 +1,5 @@
 """Documents controller handling upload, processing status, extracted results, manual corrections, and failed-job reprocessing."""
+import asyncio
 import base64
 import uuid
 import logging
@@ -15,6 +16,7 @@ from app.models.document_repo import (
     cache_file,
     get_cached_file,
     get_document_file,
+    release_original,
     add_history,
     get_history,
 )
@@ -23,10 +25,27 @@ from app.schemas.document import BatchApproveRequest, ApproveRequest
 from app.config import ALLOWED_EXTENSIONS, MAX_FILES_PER_REQUEST, MAX_UPLOAD_MB
 from app.models.result_repo import append_result_issue
 from app.services.cross_verify import cross_verify
+from app.services import cloud_storage
 from app.services.job_queue import enqueue
 
 logger = logging.getLogger("docuintel.api.documents")
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+
+def _original(doc_id: str) -> Optional[Dict[str, Any]]:
+    """The stored original ({bytes, mimetype, filename}) from memory, the database or Cloudinary; None when gone."""
+    return get_cached_file(doc_id) or get_document_file(doc_id)
+
+
+def _original_or_error(doc_id: str) -> Dict[str, Any]:
+    """Like _original, but raises the right HTTP error: 410 when the file was deleted after approval, otherwise 404."""
+    stored = _original(doc_id)
+    if stored:
+        return stored
+    doc = get_document(doc_id)
+    if doc and doc.get("original_removed"):
+        raise HTTPException(status_code=410, detail="The original file was deleted after this document was approved. The extracted data and text are kept.")
+    raise HTTPException(status_code=404, detail="Original file not found")
 
 
 class RejectRequest(BaseModel):
@@ -92,8 +111,17 @@ async def upload_documents(
         if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
             raise HTTPException(status_code=413, detail=f"'{name}' exceeds the {MAX_UPLOAD_MB} MB limit.")
         doc_id = str(uuid.uuid4())
-        b64_content = base64.b64encode(content).decode("utf-8")
         mime = file.content_type or ("application/pdf" if file.filename.lower().endswith(".pdf") else "application/octet-stream")
+
+        # Keep the original in Cloudinary while it awaits review (deleted on approval). If Cloudinary is not set up,
+        # or the call fails, fall back to keeping it in the database so the upload never fails because of storage.
+        cloud_id = None
+        if cloud_storage.enabled():
+            try:
+                cloud_id = await asyncio.to_thread(cloud_storage.upload, doc_id, file.filename, content)
+            except Exception as exc:
+                logger.warning("Cloudinary upload failed for %s (%s); keeping the file in the database instead.", file.filename, exc)
+        b64_content = None if cloud_id else base64.b64encode(content).decode("utf-8")
 
         # Save initial document record
         save_document({
@@ -107,6 +135,7 @@ async def upload_documents(
             "page_count": 1,
             "pages_done": 0,
             "file_base64": b64_content,
+            "cloud_public_id": cloud_id,
         })
 
         add_history(
@@ -114,9 +143,6 @@ async def upload_documents(
             "Document Uploaded",
             f"File {file.filename} ({len(content) / 1024:.1f} KB) queued for intake.",
         )
-
-        # Cache file in memory for instant delivery
-        cache_file(doc_id, content, mime, file.filename)
 
         # Queue background processing for time-consuming OCR and AI extraction
         enqueue(doc_id, file.filename, content, mime)
@@ -239,34 +265,11 @@ def get_document_processing_status(doc_id: str):
 @router.get("/{doc_id}/file")
 def stream_document_file(doc_id: str):
     """Streams the raw original document file (PDF or raster image)."""
-    cached = get_cached_file(doc_id)
-    if cached:
-        return Response(
-            content=cached["bytes"],
-            media_type=cached["mimetype"],
-            headers={"Content-Disposition": f'inline; filename="{cached["filename"]}"'},
-        )
-
-    stored = get_document_file(doc_id)
-    if not stored:
-        return Response(
-            content="""
-                <svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400" style="background:#f8fafc; font-family:sans-serif;">
-                  <rect width="100%" height="100%" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
-                  <text x="300" y="180" font-size="18" font-weight="600" fill="#475569" text-anchor="middle">Original File Preview Unavailable</text>
-                  <text x="300" y="215" font-size="13" fill="#94a3b8" text-anchor="middle">Document not found</text>
-                </svg>
-            """,
-            media_type="image/svg+xml",
-        )
-
-    file_bytes = stored["bytes"]
-    mime = stored["mimetype"]
-    doc = {"filename": stored["filename"]}
+    stored = _original_or_error(doc_id)
     return Response(
-        content=file_bytes,
-        media_type=mime,
-        headers={"Content-Disposition": f'inline; filename="{doc["filename"]}"'},
+        content=stored["bytes"],
+        media_type=stored["mimetype"],
+        headers={"Content-Disposition": f'inline; filename="{stored["filename"]}"'},
     )
 
 
@@ -275,9 +278,7 @@ def document_page_image(doc_id: str, page: int, scale: float = 1.6):
     """One page of the original as a PNG (PDFs and images), for the in-app preview."""
     from app.services.page_render import PageOutOfRange, PreviewUnavailable, render_page_png
 
-    stored = get_cached_file(doc_id) or get_document_file(doc_id)
-    if not stored:
-        raise HTTPException(status_code=404, detail="Original file not found")
+    stored = _original_or_error(doc_id)
     try:
         png = render_page_png(stored["bytes"], stored["mimetype"], stored["filename"], page, scale)
     except PageOutOfRange as exc:
@@ -408,7 +409,7 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
             raise RuntimeError(f"{len(pending)} invoice(s) still need review; indexing deferred")
         raw_text = res.get("raw_text") or data.get("raw_text") or ""
         if not raw_text:
-            cached = get_cached_file(doc_id)
+            cached = _original(doc_id)
             if cached:
                 from app.services.extractor import extract_raw_text
                 raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
@@ -419,11 +420,14 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
     except Exception as exc:
         logger.warning(f"Vector storage notice on manual correction: {exc}")
 
+    original_removed = False if pending else release_original(doc_id)
+
     return {
         "success": True,
         "status": doc_status,
         "stage": "Manually Corrected" if pending else "Manually Corrected & Vectorized",
         "vector_stored": not pending,
+        "original_removed": original_removed,
         "data": data,
     }
 
@@ -474,14 +478,14 @@ def reconcile_document(doc_id: str, body: ReconcileRequest):
     add_history(
         doc_id,
         "Reconciled & Approved",
-        f"Variance resolved via {body.action}. Total confirmed as ${body.total or 3340.00}. Stored in vector database.",
+        f"Variance resolved via {body.action}. Total confirmed as {body.total if body.total is not None else 'the stated total'}. Stored in vector database.",
         body.reviewer,
     )
 
     # Store in vector database
     try:
         if not raw_text:
-            cached = get_cached_file(doc_id)
+            cached = _original(doc_id)
             if cached:
                 from app.services.extractor import extract_raw_text
                 raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
@@ -491,7 +495,7 @@ def reconcile_document(doc_id: str, body: ReconcileRequest):
     except Exception as exc:
         logger.warning(f"Vector storage notice on reconcile: {exc}")
 
-    return {"success": True, "status": "completed", "stage": "Reconciled & Vectorized", "vector_stored": True}
+    return {"success": True, "status": "completed", "stage": "Reconciled & Vectorized", "vector_stored": True, "original_removed": release_original(doc_id)}
 
 
 @router.post("/{doc_id}/approve")
@@ -516,7 +520,7 @@ def approve_document(doc_id: str, body: ApproveRequest = ApproveRequest()):
         if results and len(results) > 0:
             raw_text = results[0].get("raw_text") or (results[0].get("data") or {}).get("raw_text") or ""
         if not raw_text:
-            cached = get_cached_file(doc_id)
+            cached = _original(doc_id)
             if cached:
                 from app.services.extractor import extract_raw_text
                 raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
@@ -526,7 +530,8 @@ def approve_document(doc_id: str, body: ApproveRequest = ApproveRequest()):
     except Exception as exc:
         logger.warning(f"Vector storage notice on approval: {exc}")
 
-    return {"success": True, "status": "completed", "stage": "Approved & Vectorized", "vector_stored": True}
+    # The document is accepted: its original is no longer needed (the extracted data and text stay)
+    return {"success": True, "status": "completed", "stage": "Approved & Vectorized", "vector_stored": True, "original_removed": release_original(doc_id)}
 
 
 @router.post("/{doc_id}/reject")
@@ -566,6 +571,8 @@ def reprocess_document(doc_id: str):
     cached = get_cached_file(doc_id)
     content = cached["bytes"] if cached else ((get_document_file(doc_id) or {}).get("bytes") or b"")
     if not content:
+        if doc.get("original_removed"):
+            raise HTTPException(status_code=409, detail="The original file was deleted after approval, so this document cannot be read again.")
         raise HTTPException(status_code=400, detail="Document binary not available for re-processing.")
 
     mime = doc.get("file_type") or "application/pdf"
@@ -638,6 +645,7 @@ def batch_approve(dto: BatchApproveRequest):
             "progress": 1.0,
         })
         add_history(doc_id, "Document Approved", f"Batch approved by {dto.reviewer}.", dto.reviewer)
+        release_original(doc_id)
         count += 1
     return {"count": count, "results": []}
 

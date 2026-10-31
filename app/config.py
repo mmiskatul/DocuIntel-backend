@@ -4,8 +4,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PORT = int(os.getenv("PORT", "8000"))
-
 # No default: credentials must come from the environment (.env locally, secrets manager in prod).
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -39,3 +37,11 @@ OCR_ENGINE = os.getenv("OCR_ENGINE", "auto").lower()
 OCR_MIN_CONFIDENCE = float(os.getenv("OCR_MIN_CONFIDENCE", "0.80"))
 STALE_JOB_SECONDS = int(os.getenv("STALE_JOB_SECONDS", "120"))
 RECOVERY_INTERVAL_SECONDS = int(os.getenv("RECOVERY_INTERVAL_SECONDS", "60"))
+
+# Cloudinary (optional): originals are kept there while a document awaits review and deleted once it is approved.
+# Set CLOUDINARY_URL (cloudinary://API_KEY:API_SECRET@CLOUD_NAME) or the three separate values.
+CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "docuintel").strip().strip("/") or "docuintel"
