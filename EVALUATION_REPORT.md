@@ -7,7 +7,7 @@ All figures below were **measured by running the code** on 2026-10-30/31 against
 
 ## 1. Automated tests and test results
 
-**Backend:** 112 tests. 97 call the real database and OpenAI (the full run below); 15 more (`test_eval_scoring.py`, the evaluation scoring rules) need neither and pass in 8 s.
+**Backend:** 118 tests. 97 call the real database and OpenAI (the full run below); 21 more (`test_eval_scoring.py` 15, `test_date_check.py` 6) need neither and pass in 11 s.
 - First full run: **94 passed, 0 failed, 0 skipped** in 11 min 40 s (94 tests existed then).
 - Final full run, after 3 more tests were added for a bug found in the first one: **96 passed, 1 failed** in 12 min 31 s. The failure was
   `test_recent_or_owned_jobs_are_not_stolen`: the test plants abandoned-looking jobs on purpose, and a **second backend that was running against the same
@@ -48,30 +48,32 @@ Run against the real pipeline, the real database and the real model (nothing moc
 (`tests/eval_dataset.py`) is generated in code with known answers: **51 files, 57 invoices, 164 line items, 12 categories**, including clean and degraded
 scans (JPEG compression, blur, noise, rotation, fading, a bad scan), EU number formats (`2.390,52 €`), multi-invoice bundles, a ledger, spreadsheets, wrong
 arithmetic, missing fields, a duplicate, non-invoices and broken files. The scoring rules are written at the top of `tests/eval_scoring.py` and are unit
-tested (`test_eval_scoring.py`). Raw per-document results: `tests/eval_results.json`. Reproduce with `python tests/evaluate_extended.py --out results.json`.
+tested (`test_eval_scoring.py`). Raw per-document results of the final run: `tests/eval_results.json`. Reproduce with `python tests/evaluate_extended.py --out results.json`.
 
-| Metric | Result |
-|---|---|
-| Valid documents that were processed to `completed` / `needs_review` | **100 %** (43/43), 0 pipeline crashes |
-| Broken or non-invoice files refused with a reason | **87.5 %** (7/8) |
-| Final status exactly as labelled | **74.5 %** (38/51) |
-| Header fields correct (8 fields x every invoice) | **96.5 %** (440/456) |
-| Documents with every field and every line item correct | **74.4 %** (32/43) |
-| Line items: precision / recall / F1 | **93.1 % / 90.2 % / 91.6 %** (148 of 164 found) |
-| Wrong values stored as `completed` with no flag (silent errors) | **2** of 29 completed documents (6.9 %) |
-| Values invented for a field that is not on the page | **0** (3 documents had one missing) |
-| Time per document | mean **11.4 s**, median 12.1 s, p95 17.1 s, max 21.0 s |
+The evaluation was run **twice**: run 1 before the date-order guard (`app/services/date_check.py`) was added, run 2 after it. Run 2 is the current system.
 
-Per-field accuracy: supplier 100 %, customer 98.2 %, currency 98.2 %, total 96.5 %, invoice number / date / subtotal / tax 94.7 % each.
+| Metric | Run 1 (before date guard) | **Run 2 (current)** |
+|---|---:|---:|
+| Valid documents processed to `completed` / `needs_review` | 100 % (43/43) | **100 % (43/43)**, 0 pipeline crashes |
+| Broken or non-invoice files refused with a reason | 87.5 % (7/8) | **87.5 % (7/8)** |
+| Final status exactly as labelled | 74.5 % (38/51) | **72.5 % (37/51)** |
+| Header fields correct (8 fields x every invoice) | 96.5 % (440/456) | **96.7 % (441/456)** |
+| Documents with every field and every line item correct | 74.4 % (32/43) | **72.1 % (31/43)** |
+| Line items precision / recall / F1 | 93.1 / 90.2 / 91.6 % (148 of 164) | **87.4 / 84.8 / 86.1 %** (139 of 164) |
+| Wrong values stored as `completed` with no flag (silent errors) | 2 of 29 (EV-D04, EV-D07) | **2 of 28 (7.1 %)** (EV-I01, EV-I03) |
+| Values invented for a field that is not on the page | 0 | **0** (3 documents had one missing) |
+| Time per document | mean 11.4 s, p95 17.1 s | **mean 11.3 s**, median 11.6 s, p95 16.8 s, max 18.6 s |
 
-| Category | Docs | Status as labelled | Header field accuracy | Perfect |
+Run 2 per-field accuracy: supplier 100 %, customer 98.2 %, currency 98.2 %, invoice date 96.5 %, total 96.5 %, invoice number / subtotal / tax 94.7 % each.
+
+| Category (run 2) | Docs | Status as labelled | Header field accuracy | Perfect |
 |---|---:|---:|---:|---:|
-| digital_pdf | 12 | 12/12 | 97.9 % | 10/12 |
+| digital_pdf | 12 | 11/12 | 99.0 % | 11/12 |
 | multi_page_pdf | 3 | 3/3 | 100 % | 3/3 |
 | bundle_pdf (2-3 invoices per file) | 2 | 2/2 | 100 % | 2/2 |
 | ledger | 2 | 2/2 | 100 % | 2/2 |
 | spreadsheet | 3 | 2/3 | 87.5 % | 2/3 |
-| scanned_image | 10 | 4/10 | 87.5 % | 4/10 |
+| scanned_image | 10 | 4/10 | 87.5 % | 2/10 |
 | scanned_pdf | 2 | 0/2 | 93.8 % | 0/2 |
 | wrong_arithmetic | 4 | 3/4 | 100 % | 4/4 |
 | missing_field | 3 | 1/3 | 100 % | 3/3 |
@@ -79,23 +81,33 @@ Per-field accuracy: supplier 100 %, customer 98.2 %, currency 98.2 %, total 96.5
 | not_an_invoice | 4 | 4/4 | - | - |
 | corrupt_or_empty | 4 | 3/4 | - | - |
 
-### What went wrong, document by document
+### What the date guard changed (run 1 to run 2)
 
-- **Two silent errors (the most serious finding).** EV-D04 and EV-D07 are digital PDFs with dates printed `10/01/2026` and `08/01/2026` (day first, as the
-  labels say). The system stored a different date for both, marked them `completed` and raised no flag. Everything else on those two invoices was right.
-  An ambiguous `dd/mm` date is a real weakness: the extractor is not told which order the document uses. These are the only wrong values that were not flagged.
+Run 1 found two silent errors, EV-D04 and EV-D07: digital PDFs with dates printed `10/01/2026` and `08/01/2026` (day first) were stored with a different
+date, marked `completed`, and not flagged. The guard looks at the invoice's own text. If another date in the document can only be read one way, or the
+numbers use European formatting, the order is settled and a wrong date is corrected; otherwise the invoice is kept but flagged `AMBIGUOUS_DATE` for review.
+In run 2 EV-D07 (European number format) is read correctly and EV-D04 (a US-style invoice that is truly ambiguous) is sent to review with the reason shown.
+Both are now handled; 6 unit tests cover the rule (`test_date_check.py`).
+
+### What went wrong in run 2, document by document
+
+- **Scanned line items are the main weakness.** Header fields on scans are mostly right, but the table is often misread: the local OCR returns a table row
+  with its columns shifted or merged, and the model then puts numbers in the wrong fields (for example the line total in `unit_price` and the quantity empty).
+  Two of the 12 scans (EV-I01, a clean scan, and EV-I03, a JPEG-compressed one) came back `completed` with wrong line items and no flag. Both documents' header
+  values were correct, so the totals still matched, which is why the validator did not object. When reproduced, EV-I01 and EV-I08 each returned 0 of 4 correct
+  items. The same scans scored differently in run 1 (EV-I01 4/4, EV-I08 4/4), so scan line items also **vary from run to run**; the two runs differ only in the
+  date guard, which does not touch line items.
+- **Scans that were flagged.** Eight of the 12 scans ended in `needs_review` where the label expected `completed`, because the arithmetic check noticed the
+  line items did not add up (EV-I05, I07, I08, P01 and others). These flags are mostly justified; the effect is that most degraded scans need a human look.
+  The heavy blur (EV-I06) lost the invoice number, date, customer and totals and was flagged with five issue codes, including low OCR quality. Local OCR handled
+  9 scans (mean confidence 0.82) and the vision model 3 whose local confidence was under 0.80.
+- **Flagged needlessly: 10 of the 35 documents labelled clean** (review-flag precision 33.3 %), nearly all scans. The flag errs on the side of caution.
 - **CSV invoice with a header block (EV-S03).** A CSV laid out like an invoice (key/value lines at the top, then an item table) was read with 0 of its 5 items
   and no totals. It was flagged (`MISSING_TOTAL`, `needs_review`), so it was not silent, but the parser does not handle this layout.
-- **Scans.** Of 12 scans, 8 ended in `needs_review` where the label expected `completed`. In several of them the header fields were right but 1-2 line items were
-  misread (EV-I03, I05, I07, P01: for example 2 of 3 items matched), and the arithmetic check noticed the mismatch, so those flags were mostly justified. The
-  effect is that most degraded scans need a human look. The heavy blur (EV-I06) lost the invoice number, date, customer and totals and was flagged with five issue
-  codes, including low OCR quality. Local OCR handled 9 scans (mean confidence 0.82); 3 were sent to the vision model because local confidence was below 0.80.
-  Clean and rotated scans were read well; the bad scan and the faded one were not.
-- **Flagged needlessly: 9 of the 35 documents labelled clean** (review-flag precision 35.7 %), nearly all of them the scans above. The flag errs on the side of caution.
 - **Wrong arithmetic and missing fields: flagged, but the status stays `completed`.** EV-X03 (one line amount wrong), EV-N01 (no date) and EV-N02 (no customer)
   were labelled `needs_review` but ended `completed`. The correct issue was raised on each (`LINE_ITEM_ARITHMETIC_ERROR`, `MISSING_INVOICE_DATE`,
-  `MISSING_CUSTOMER_NAME`); those issues are warnings in the validator and do not change the status. The 3 "missed" flags in the review-flagging count are these three.
-  Whether a warning should force review is a design choice rather than an extraction error, but it is reported here as measured against the label.
+  `MISSING_CUSTOMER_NAME`); those issues are warnings or information in the validator and do not change the status. The 3 "missed" flags in the review-flagging
+  count are these three. Whether a warning should force review is a design choice rather than an extraction error, but it is reported here as measured against the label.
 - **Truncated PDF (EV-F02)** was expected to fail but produced a result with no items, missing customer and total, and `needs_review`. It is not silent, but it
   is not a clean refusal either. The empty file, the corrupt Excel file and the corrupt PDF failed with a clear reason in about 2.4 s.
 - **Non-invoice documents** (4 of 4) were rejected. No value was invented for any of the 3 documents that had a field truly missing.
@@ -103,8 +115,8 @@ Per-field accuracy: supplier 100 %, customer 98.2 %, currency 98.2 %, total 96.5
 ### What this does and does not show
 
 The documents are synthetic (generated by code), so the numbers measure the pipeline on controlled layouts, not on real-world invoices. The sample is small:
-one document is 2 % of the status score, and run-to-run variation exists because the model and the OCR engines are not deterministic. The dataset has no
-handwriting, no complex real-world layouts and no 1000-page scanned file.
+one document is 2 % of the status score. The model and the OCR engines are not deterministic, as the difference between the two runs shows, so a single run should
+be read as one sample rather than a fixed score. The dataset has no handwriting, no complex real-world layouts and no 1000-page scanned file.
 
 ## 2b. Earlier 7-document smoke test (`tests/evaluate_benchmark.py`, also run as `test_evaluation`)
 
@@ -176,6 +188,6 @@ A full 1000-page *scanned* PDF was **not** run.
 - Line-item accuracy is scored in the 51-document run (F1 91.6 %), not in the 7-document smoke test.
 - Poor-quality images remain the weak spot; the system now detects unreliable reads and routes them to review rather than trusting them, but it cannot recover unreadable text.
 - Multi-invoice splitting relies on a recognisable "Invoice No/Number/#" label on each invoice's first page; bundles without one stay a single result.
-- Cross-verification matches on invoice number only; invoices without a number cannot be matched. Ambiguous `dd/mm` vs `mm/dd` dates are **not** reliably read day-first: two documents in the 51-document run got a different date with no flag (section 2).
+- Cross-verification matches on invoice number only; invoices without a number cannot be matched. Ambiguous `dd/mm` vs `mm/dd` dates are **not** reliably read day-first: in the first 51-document run two documents got a different date with no flag; a guard added afterwards corrects the order when the document shows it and flags the invoice when it does not (section 2).
 - No load test was run; only three concurrent workers were exercised.
 - Job durability and multi-instance safety use PostgreSQL (`FOR UPDATE SKIP LOCKED`, heartbeats, stale-job reclaim after `STALE_JOB_SECONDS`, default 120 s) instead of Redis/BullMQ; this was verified with concurrent sweeps in tests, not with two real server processes.

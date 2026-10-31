@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from app.config import EXTRACTION_PARALLELISM, MAX_INVOICES_PER_DOCUMENT
 from app.models.document_repo import save_document, add_history
 from app.models.result_repo import delete_results_for_document, save_extraction_result
+from app.services.date_check import check_invoice_date
 from app.services.segmenter import split_invoice_segments
 from app.services.vision_ocr import get_ocr_meta, reset_ocr_meta
 from app.services.extractor import extract_raw_text, extract_structured_fields
@@ -68,6 +69,10 @@ def _persist_invoices(doc_id: str, filename: str, text: str, items: List[Dict[st
     for item in items:
         extracted, seg_text = item["extracted"], item["text"]
         issues, needs_review, _ = validate_document_data(extracted=extracted, doc_id=doc_id, filename=filename, check_duplicates=item.get("source") != "ledger")
+        date_issue, _ = check_invoice_date(extracted, seg_text)
+        if date_issue:
+            issues.append(date_issue)
+            needs_review = needs_review or date_issue["severity"] == "error"
         rejected = (not extracted.get("is_supported_format", True)) or any(
             i.get("code") == "FORMAT_REJECTED" or i.get("severity") == "fatal" for i in issues)
         if rejected:
@@ -206,6 +211,11 @@ def run_document_pipeline(doc_id: str, filename: str, file_bytes: bytes, mime_ty
             filename=filename,
             check_duplicates=True,
         )
+        date_issue, _ = check_invoice_date(extracted, text)
+        if date_issue:
+            issues.append(date_issue)
+            if date_issue["severity"] == "error" and not needs_review:
+                needs_review, review_stage = True, "Needs Review (Ambiguous Date)"
         if "[illegible]" in text.lower() or ocr.get("low_confidence"):
             issues.append(_ocr_issue())
             if not needs_review:

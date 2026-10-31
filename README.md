@@ -245,7 +245,7 @@ python tests/evaluate_extended.py     # the 51-document evaluation on its own (a
 
 The frontend has its own tests: `npm test` in the frontend repository (41 tests, about a second, no backend needed).
 
-**Latest results (2026-10-31):** backend 112 tests (97 in the full run below, plus 15 scoring tests added afterwards that pass in 8 s). The first full run was **94 passed, 0 failed** (11 min 40 s). After 3 tests were added for a bug that run
+**Latest results (2026-10-31):** backend 118 tests (97 in the full run below, plus 21 scoring and date tests added afterwards that pass in 11 s). The first full run was **94 passed, 0 failed** (11 min 40 s). After 3 tests were added for a bug that run
 revealed, the final full run was **96 passed, 1 failed**; the one failure was a recovery test disturbed by a second server on the same database, and it passes
 on its own. Frontend: **41 passed, 0 failed**. A table of every test file and what it covers is in [`EVALUATION_REPORT.md`](EVALUATION_REPORT.md).
 
@@ -254,11 +254,13 @@ limits, API-key authentication, crash recovery of jobs, multi-invoice splitting,
 (corrupt and empty files, an LLM outage). They run against the real database and the real OpenAI API, and each test creates and deletes only its own
 documents.
 
-**Measured evaluation** (`python tests/evaluate_extended.py`, 51 synthetic documents including degraded scans, run on 2026-10-31 against the real pipeline):
-all 43 valid documents were processed (0 crashes); header fields 96.5% correct; line items precision 93.1% / recall 90.2%; 7 of 8 broken or non-invoice files
-were refused with a reason (a truncated PDF came back as `needs_review` instead of failing); mean 11.4 s per document (p95 17.1 s). Weak spots, stated plainly:
-2 documents with `dd/mm` dates were stored with a different date and no flag, a CSV laid out like an invoice was not parsed, and most degraded scans end in
-`needs_review`. Details per document are in the evaluation report. The data is synthetic and the sample small, so this is not a claim about real-world accuracy.
+**Measured evaluation** (`python tests/evaluate_extended.py`, 51 synthetic documents including degraded scans, final run on 2026-10-31 against the real pipeline):
+all 43 valid documents were processed (0 crashes); header fields 96.7% correct; line items precision 87.4% / recall 84.8%; 7 of 8 broken or non-invoice files
+were refused with a reason (a truncated PDF came back as `needs_review` instead of failing); mean 11.3 s per document (p95 16.8 s). Weak spots, stated plainly:
+line items read from scans are often misaligned and two scans were stored as `completed` with wrong line items and no flag; results for the same scan varied
+between two runs; a CSV laid out like an invoice was not parsed; and most degraded scans end in `needs_review`. A first run found two day-first dates stored
+wrongly with no flag; a date-order guard added afterwards fixes or flags that case. Details per document are in the evaluation report. The data is synthetic and
+the sample small, so this is not a claim about real-world accuracy.
 
 ---
 
@@ -279,7 +281,7 @@ Not included: per-user accounts and roles, rate limiting, and content-based file
 
 - **Scanned documents are capped at 100 OCR pages** (`MAX_OCR_PAGES`). A 1,000-page *digital* PDF is fine; a 1,000-page *scanned* one was not tested.
 - **No load test.** Throughput was exercised with three parallel workers only. The queue is designed to be safe with several server processes, which was verified with concurrent recovery sweeps but not with two real servers.
-- **Small evaluation set.** Poor-quality scans are the weakest area, and ambiguous `dd/mm` dates can be misread without a flag; the system flags unreliable reads for review rather than trusting them.
+- **Small evaluation set.** Poor-quality scans are the weakest area (their line items are often misaligned, sometimes without a flag); the system flags unreliable reads for review rather than trusting them.
 - **Redis/BullMQ is not used** (see the design decisions above).
 - **Hosting.** The author's demo backend runs on a laptop. The free hosting tried (512 MB of memory) was too small for the OCR model.
 - **Cross-verification** matches invoices by invoice number only. Invoices without a number cannot be matched. Ambiguous `dd/mm` and `mm/dd` dates are not reliably told apart (see the evaluation report).
