@@ -75,6 +75,11 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                 conn.commit()
                 return dict(res) if res else doc
             else:
+                if not doc.get("filename"):
+                    # A progress update for a document that no longer exists: it was deleted while a worker was still running.
+                    # Only an upload (which always carries a file name) may create a row; an update must never bring a deleted document back.
+                    logger.info("Ignoring an update for a document that no longer exists: %s", doc_id)
+                    return doc
                 query = """
                     INSERT INTO documents (id, filename, file_type, size_bytes, status, stage, progress, page_count, pages_done, error, file_base64, cloud_public_id, extracted_text, created_at, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
@@ -142,7 +147,26 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
         release_conn(conn)
 
 
-def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+def list_documents(
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    supplier: Optional[str] = None,
+    invoice_number: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    min_total: Optional[float] = None,
+    max_total: Optional[float] = None,
+    needs_review: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
+    """Lists documents, newest first.
+
+    `q` matches the file name, id, extracted text or any party/number (every word must match somewhere).
+    The invoice filters (supplier, invoice_number, date range, total range, needs_review) are combined with AND and must all hold for
+    the SAME invoice, so a bundle that contains one cheap and one expensive invoice is not matched by "cheap supplier AND expensive total".
+    Dates are compared as ISO text (YYYY-MM-DD); an invoice whose date was not read as ISO is left out when a date filter is used.
+    """
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -166,6 +190,30 @@ def list_documents(q: Optional[str] = None, status: Optional[str] = None, limit:
                         )
                     )""")
                     params.extend([like] * 6)
+
+            invoice_conds: List[str] = []
+            if supplier and supplier.strip():
+                invoice_conds.append("er.supplier_name ILIKE %s")
+                params.append(f"%{supplier.strip()}%")
+            if invoice_number and invoice_number.strip():
+                invoice_conds.append("er.invoice_number ILIKE %s")
+                params.append(f"%{invoice_number.strip()}%")
+            if date_from:
+                invoice_conds.append("(er.invoice_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' AND er.invoice_date >= %s)")
+                params.append(date_from)
+            if date_to:
+                invoice_conds.append("(er.invoice_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' AND er.invoice_date <= %s)")
+                params.append(date_to)
+            if min_total is not None:
+                invoice_conds.append("er.total >= %s")
+                params.append(min_total)
+            if max_total is not None:
+                invoice_conds.append("er.total <= %s")
+                params.append(max_total)
+            if needs_review:
+                invoice_conds.append("(er.needs_review AND NOT er.reviewed)")
+            if invoice_conds:
+                conditions.append(f"EXISTS (SELECT 1 FROM extraction_results er WHERE er.document_id = d.id AND {' AND '.join(invoice_conds)})")
 
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""

@@ -5,7 +5,8 @@ import uuid
 import logging
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile, status
+from datetime import date
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Response, UploadFile, status
 
 from app.models.document_repo import (
     save_document,
@@ -214,11 +215,26 @@ def cross_verify_documents(body: CrossVerifyRequest):
 def get_documents_list(
     q: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    supplier: Optional[str] = Query(None, description="Part of the supplier name"),
+    invoice_number: Optional[str] = Query(None, description="Part of the invoice number"),
+    date_from: Optional[date] = Query(None, description="Invoice date on or after (YYYY-MM-DD)"),
+    date_to: Optional[date] = Query(None, description="Invoice date on or before (YYYY-MM-DD)"),
+    min_total: Optional[float] = Query(None, ge=0, description="Invoice total at least this much"),
+    max_total: Optional[float] = Query(None, ge=0, description="Invoice total at most this much"),
+    needs_review: Optional[bool] = Query(None, description="Only documents with an invoice still waiting for review"),
 ):
-    """Lists all processed documents with summaries and processing status."""
-    return list_documents(q=q, status=status, limit=limit, offset=offset)
+    """Lists processed documents with summaries and status. All filters are optional and combined with AND."""
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to.")
+    if min_total is not None and max_total is not None and min_total > max_total:
+        raise HTTPException(status_code=422, detail="min_total must not be greater than max_total.")
+    return list_documents(
+        q=q, status=status, limit=limit, offset=offset, supplier=supplier, invoice_number=invoice_number,
+        date_from=date_from.isoformat() if date_from else None, date_to=date_to.isoformat() if date_to else None,
+        min_total=min_total, max_total=max_total, needs_review=needs_review,
+    )
 
 
 @router.get("/{doc_id}")
