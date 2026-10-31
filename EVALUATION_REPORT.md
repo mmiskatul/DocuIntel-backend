@@ -7,7 +7,8 @@ All figures below were **measured by running the code** on 2026-10-30/31 against
 
 ## 1. Automated tests and test results
 
-**Backend:** 118 tests. 97 call the real database and OpenAI (the full run below); 21 more (`test_eval_scoring.py` 15, `test_date_check.py` 6) need neither and pass in 11 s.
+**Backend:** 118 tests. The complete suite was run last on 2026-10-31 after the date guard and the evaluation tests were added: **118 passed, 0 failed, 0 skipped** in 12 min 4 s (JUnit report; no other backend was running on the database).
+The 97 tests that call the real database and OpenAI existed earlier that day, and 21 more (`test_eval_scoring.py` 15, `test_date_check.py` 6) need neither. Earlier runs of the 97:
 - First full run: **94 passed, 0 failed, 0 skipped** in 11 min 40 s (94 tests existed then).
 - Final full run, after 3 more tests were added for a bug found in the first one: **96 passed, 1 failed** in 12 min 31 s. The failure was
   `test_recent_or_owned_jobs_are_not_stolen`: the test plants abandoned-looking jobs on purpose, and a **second backend that was running against the same

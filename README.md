@@ -245,7 +245,7 @@ python tests/evaluate_extended.py     # the 51-document evaluation on its own (a
 
 The frontend has its own tests: `npm test` in the frontend repository (41 tests, about a second, no backend needed).
 
-**Latest results (2026-10-31):** backend 118 tests (97 in the full run below, plus 21 scoring and date tests added afterwards that pass in 11 s). The first full run was **94 passed, 0 failed** (11 min 40 s). After 3 tests were added for a bug that run
+**Latest results (2026-10-31):** the complete backend suite of 118 tests passed (**118 passed, 0 failed**, 12 min 4 s, JUnit report). Earlier the same day, with 97 tests: the first full run was **94 passed, 0 failed** (11 min 40 s). After 3 tests were added for a bug that run
 revealed, the final full run was **96 passed, 1 failed**; the one failure was a recovery test disturbed by a second server on the same database, and it passes
 on its own. Frontend: **41 passed, 0 failed**. A table of every test file and what it covers is in [`EVALUATION_REPORT.md`](EVALUATION_REPORT.md).
 
