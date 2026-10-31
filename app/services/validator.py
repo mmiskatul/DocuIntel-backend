@@ -50,6 +50,11 @@ def validate_document_data(
     """
     issues: List[ValidationIssue] = []
 
+    # Amounts in messages carry the document's own currency code (not an assumed "$")
+    _cur = str(extracted.get("currency") or "").strip().upper()
+    def _m(x: float) -> str:
+        return f"{_cur} {x:,.2f}" if _cur else f"{x:,.2f}"
+
     # Format check: if already marked format rejected, return immediately
     if not extracted.get("is_supported_format", True):
         rejection_reason = extracted.get("rejection_reason") or "Document format rejected."
@@ -157,7 +162,7 @@ def validate_document_data(
             code="NEGATIVE_TOTAL",
             severity="error",
             field="total",
-            message=f"Extracted Total amount is negative (${tot_f:,.2f}). Standard invoices cannot have a negative balance due.",
+            message=f"Extracted Total amount is negative ({_m(tot_f)}). Standard invoices cannot have a negative balance due.",
             details={"value": tot_f},
         ))
 
@@ -166,7 +171,7 @@ def validate_document_data(
             code="NEGATIVE_SUBTOTAL",
             severity="error",
             field="subtotal",
-            message=f"Extracted Subtotal amount is negative (${sub_f:,.2f}).",
+            message=f"Extracted Subtotal amount is negative ({_m(sub_f)}).",
             details={"value": sub_f},
         ))
 
@@ -175,7 +180,7 @@ def validate_document_data(
             code="NEGATIVE_TAX",
             severity="error",
             field="tax",
-            message=f"Extracted Tax/Surcharge amount is negative (${tax_f:,.2f}).",
+            message=f"Extracted Tax/Surcharge amount is negative ({_m(tax_f)}).",
             details={"value": tax_f},
         ))
 
@@ -187,7 +192,7 @@ def validate_document_data(
                 code="ZERO_TOTAL_WITH_ITEMS",
                 severity="error",
                 field="total",
-                message="Extracted Total is $0.00 despite multiple billable line items being present.",
+                message=f"Extracted Total is {_m(0)} despite multiple billable line items being present.",
             ))
 
     # Line item numeric sanity checks
@@ -202,14 +207,14 @@ def validate_document_data(
                 code="NEGATIVE_LINE_AMOUNT",
                 severity="warning",
                 field=f"line_items[{idx}].amount",
-                message=f"Line item '{desc}' has negative amount (${amt:,.2f}).",
+                message=f"Line item '{desc}' has negative amount ({_m(amt)}).",
             ))
         if rate is not None and rate < 0:
             issues.append(ValidationIssue(
                 code="NEGATIVE_UNIT_PRICE",
                 severity="warning",
                 field=f"line_items[{idx}].unit_price",
-                message=f"Line item '{desc}' has negative unit rate (${rate:,.2f}).",
+                message=f"Line item '{desc}' has negative unit rate ({_m(rate)}).",
             ))
         if qty is not None and qty <= 0:
             issues.append(ValidationIssue(
@@ -262,7 +267,7 @@ def validate_document_data(
                     code="LINE_ITEM_ARITHMETIC_ERROR",
                     severity="warning",
                     field=f"line_items[{idx}]",
-                    message=f"Line item '{item.get('description', f'Item #{idx+1}')}': Qty ({qty}) x Rate (${rate:,.2f}) = ${expected_amt:,.2f}, but stated amount is ${actual_amt:,.2f}.",
+                    message=f"Line item '{item.get('description', f'Item #{idx+1}')}': Qty ({qty}) x Rate ({_m(rate)}) = {_m(expected_amt)}, but stated amount is {_m(actual_amt)}.",
                     details={"expected": expected_amt, "actual": actual_amt, "diff": round(abs(expected_amt - actual_amt), 2)},
                 ))
 
@@ -274,7 +279,7 @@ def validate_document_data(
                 code="LINE_ITEMS_SUBTOTAL_MISMATCH",
                 severity="error",
                 field="subtotal",
-                message=f"Sum of line items (${sum_line_items:,.2f}) does not match stated Subtotal (${sub_f:,.2f}). Discrepancy: ${diff_sub:,.2f}.",
+                message=f"Sum of line items ({_m(sum_line_items)}) does not match stated Subtotal ({_m(sub_f)}). Discrepancy: {_m(diff_sub)}.",
                 details={"line_items_sum": sum_line_items, "stated_subtotal": sub_f, "diff": diff_sub},
             ))
 
@@ -287,7 +292,7 @@ def validate_document_data(
                 code="TOTAL_MISMATCH",
                 severity="error",
                 field="total",
-                message=f"Arithmetic discrepancy: Subtotal (${sub_f:,.2f}) + Tax (${tax_f:,.2f}) = ${expected_total:,.2f}, but Total is stated as ${tot_f:,.2f}. Difference: ${diff_total:,.2f}.",
+                message=f"Arithmetic discrepancy: Subtotal ({_m(sub_f)}) + Tax ({_m(tax_f)}) = {_m(expected_total)}, but Total is stated as {_m(tot_f)}. Difference: {_m(diff_total)}.",
                 details={"expected": expected_total, "actual": tot_f, "diff": diff_total},
             ))
 
@@ -301,7 +306,7 @@ def validate_document_data(
                 code="LINE_ITEMS_TOTAL_MISMATCH",
                 severity="error",
                 field="total",
-                message=f"Sum of line items (${sum_line_items:,.2f}) + Tax (${tax_add:,.2f}) = ${expected_total:,.2f}, but Total is stated as ${tot_f:,.2f}. Difference: ${diff_total:,.2f}.",
+                message=f"Sum of line items ({_m(sum_line_items)}) + Tax ({_m(tax_add)}) = {_m(expected_total)}, but Total is stated as {_m(tot_f)}. Difference: {_m(diff_total)}.",
                 details={"expected": expected_total, "actual": tot_f, "diff": diff_total},
             ))
 
