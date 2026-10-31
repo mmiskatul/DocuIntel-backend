@@ -234,23 +234,29 @@ Amounts within 0.05 are treated as equal. Messages quote the invoice's own curre
 
 ## Testing and evaluation
 
-**Where things stand.** The automated test suite (66 tests) and the benchmark script were written and run, then **removed from the main
-branch on 2026-10-31**. They are kept in git history. To get them back:
-
 ```bash
-git checkout 184f85c -- tests      # restores the tests/ folder
 pip install pytest
-pytest tests                       # needs DATABASE_URL and OPENAI_API_KEY; takes about 7 minutes
-python tests/evaluate_benchmark.py # the labelled benchmark
+pytest tests                          # backend: needs DATABASE_URL and OPENAI_API_KEY, takes about 12 minutes
+python tests/evaluate_benchmark.py    # the labelled benchmark on its own
 ```
 
-The tests cover document parsing (PDF, image, Excel, CSV), OCR routing, AI extraction, validation, the REST endpoints, upload limits, API-key
-authentication, crash recovery of jobs, multi-invoice splitting, cross-verification, search, and failure scenarios (corrupt and empty files,
-LLM outage). They call the real database and the real OpenAI API.
+> **Stop any other backend that uses the same database before running the tests.** The job-recovery tests plant "abandoned" jobs on purpose,
+> and a second running server would (correctly) recover them and make a test fail.
 
-**Measured results** (7-document labelled benchmark, run before the tests were removed): 100% extraction accuracy on the 5 valid documents,
-100% success on valid documents, 0% failure on valid documents, mean processing time 10.9 s per document. The corrupt file and the non-invoice
-were handled correctly. Full tables, per-document times and the caveats are in [`EVALUATION_REPORT.md`](EVALUATION_REPORT.md).
+The frontend has its own tests: `npm test` in the frontend repository (41 tests, about a second, no backend needed).
+
+**Latest results (2026-10-31):** backend 97 tests. The first full run was **94 passed, 0 failed** (11 min 40 s). After 3 tests were added for a bug that run
+revealed, the final full run was **96 passed, 1 failed**; the one failure was a recovery test disturbed by a second server on the same database, and it passes
+on its own. Frontend: **41 passed, 0 failed**. A table of every test file and what it covers is in [`EVALUATION_REPORT.md`](EVALUATION_REPORT.md).
+
+The backend tests cover document parsing (PDF, image, Excel, CSV), OCR routing, AI extraction, validation, the REST endpoints and their filters, upload
+limits, API-key authentication, crash recovery of jobs, multi-invoice splitting, cross-verification, search, original-file storage, and failure scenarios
+(corrupt and empty files, an LLM outage). They run against the real database and the real OpenAI API, and each test creates and deletes only its own
+documents.
+
+**Measured benchmark** (7 labelled documents, measured before the latest changes and re-run inside the suite above, where it met its thresholds): 100%
+extraction accuracy on the 5 valid documents, 100% success on valid documents, 0% failure on valid documents, mean processing time 10.9 s per document;
+the corrupt file and the non-invoice were handled correctly. Per-document times, the OCR measurements and the caveats are in the evaluation report.
 That benchmark is small and synthetic, so treat it as a smoke test rather than a claim about real-world accuracy.
 
 ---

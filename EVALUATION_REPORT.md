@@ -2,17 +2,47 @@
 
 All figures below were **measured by running the code** on 2026-10-30/31 against the live stack
 (OpenAI `gpt-4o-mini`, Supabase PostgreSQL in EU, run from a developer laptop). Nothing is estimated.
-> **Note:** the automated tests and the benchmark script described below were removed from the repository on 2026-10-31. Every figure in this report was measured before their removal. They remain in git history: `git show 184f85c:tests/evaluate_benchmark.py` prints the benchmark, and `git checkout 184f85c -- tests` restores the whole suite (it needs `DATABASE_URL` and `OPENAI_API_KEY`).
+> Tests and results were last run on **2026-10-31**. The labelled benchmark in section 2 was measured on 2026-10-30/31; it was run again inside the
+> test suite on 2026-10-31 and met its pass thresholds, but the detailed table below is from the earlier measurement and has not been re-measured since the later changes.
 
-## 1. Automated test suite
+## 1. Automated tests and test results
 
-`pytest tests` → **66 passed, 0 failed** (about 7 minutes; the tests call the real database and OpenAI).
-Covers: PDF/CSV/XLSX/XLS/image parsing, local + LLM OCR routing, 1000-page PDF, corrupt and empty files, AI extraction
-(incl. LLM-outage behaviour), validation rules, REST endpoints, upload limits, API-key auth, durable job recovery
-(including three concurrent recovery sweeps that never claim a job twice), multi-invoice splitting, per-invoice corrections,
-spreadsheet ledgers, **PDF-vs-PDF and PDF-vs-Excel cross-verification**, database + pgvector search, hybrid search with real metadata, slim list payloads, evaluation benchmark.
+**Backend:** 97 tests, all of which call the real database and OpenAI.
+- First full run: **94 passed, 0 failed, 0 skipped** in 11 min 40 s (94 tests existed then).
+- Final full run, after 3 more tests were added for a bug found in the first one: **96 passed, 1 failed** in 12 min 31 s. The failure was
+  `test_recent_or_owned_jobs_are_not_stolen`: the test plants abandoned-looking jobs on purpose, and a **second backend that was running against the same
+  database** (the developer's own server) did what it is designed to do and recovered them. The same test **passes when run on its own** (run twice, 25 s and 28 s).
+  The 96 other tests passed. **To get a fully clean run, stop any other backend that uses the same database first.**
 
-## 2. Labeled benchmark (`tests/evaluate_benchmark.py`)
+**Frontend:** `npm test` → **41 passed, 0 failed** (Vitest, about one second; no backend needed).
+
+*Bug found by the first full run's leftovers:* a progress update from a still-running worker could re-create a document that had just been deleted (a ghost
+"document.pdf", 0 bytes). It is fixed in `save_document` (an update may no longer create a row) and covered by `test_deleted_while_processing`.
+
+| Backend test file | Tests | Covers |
+|---|---:|---|
+| `test_rest_apis` | 6 | REST endpoints: upload, status, results, corrections, approval, reprocessing, deletion |
+| `test_queue_security_scale` | 11 | Upload limits, API-key authentication, durable queue, extraction failure and LLM-outage behaviour |
+| `test_local_ocr_and_recovery` | 8 | Local OCR and its routing to the vision model, glued-word repair, crash recovery (three concurrent sweeps never claim a job twice) |
+| `test_robustness` | 7 | Corrupt, empty and unsupported files, malformed ids, a 1,000-page PDF |
+| `test_multi_invoice` | 4 | Splitting a PDF into invoices, per-invoice correction, ledgers |
+| `test_cross_verification` | 9 | PDF-vs-PDF and PDF-vs-Excel comparison, tolerance, review flags, duplicate handling |
+| `test_validation_rules`, `test_dynamic_reasons`, `test_validation_currency` | 12 | Validation rules, rejection reasons, messages in the invoice's own currency |
+| `test_database_and_search`, `test_search_and_payloads` | 9 | Schema, pgvector search, hybrid search, slim list payloads |
+| `test_document_filters` | 16 | Supplier, invoice-number, date, total and needs-review filters (all applied to the same invoice), and rejection of bad input |
+| `test_cloud_storage`, `test_page_preview`, `test_db_pool_wait` | 10 | Original files kept and deleted on approval, page images, waiting for a free database connection |
+| `test_deleted_while_processing` | 3 | A late progress update can no longer bring a deleted document back |
+| `test_pipeline`, `test_evaluation` | 2 | The pipeline end to end, and the labelled benchmark (accuracy, success rate, failure handling and time must meet thresholds) |
+
+The suite was run against the live database. Tests create their own documents and delete only those; none of them deletes other documents. Two caveats: the job-recovery tests assume no other backend is using the same database (see above), and a second server that is still running old code can re-create a document a test has just deleted.
+
+| Frontend test file | Tests | Covers |
+|---|---:|---|
+| `store.test.ts` | 21 | Actions that update the screen at once and are undone when the server refuses, a stale answer not overwriting a newer one, delete with its overlay, uploads, the document cache, saved preferences, notifications |
+| `search_verify_confirm.test.ts` | 10 | Searches that start from a clean page, comparing without changing documents, marking for review, the confirmation popup |
+| `format.test.ts` | 10 | Money, sizes, durations, file kinds, field parsing, readable error messages |
+
+## 2. Labeled benchmark (`tests/evaluate_benchmark.py`, also run as `test_evaluation`)
 
 Dataset: **7 documents** generated in code with known ground truth (5 valid commercial documents, 1 non-invoice, 1 corrupt file).
 
