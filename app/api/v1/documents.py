@@ -13,8 +13,6 @@ from app.models.document_repo import (
     list_documents,
     delete_document,
     delete_all_documents,
-    cache_file,
-    get_cached_file,
     get_document_file,
     release_original,
     add_history,
@@ -33,8 +31,8 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
 def _original(doc_id: str) -> Optional[Dict[str, Any]]:
-    """The stored original ({bytes, mimetype, filename}) from memory, the database or Cloudinary; None when gone."""
-    return get_cached_file(doc_id) or get_document_file(doc_id)
+    """The stored original ({bytes, mimetype, filename}) from the database or Cloudinary; None when gone."""
+    return get_document_file(doc_id)
 
 
 def _original_or_error(doc_id: str) -> Dict[str, Any]:
@@ -568,8 +566,7 @@ def reprocess_document(doc_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    cached = get_cached_file(doc_id)
-    content = cached["bytes"] if cached else ((get_document_file(doc_id) or {}).get("bytes") or b"")
+    content = (get_document_file(doc_id) or {}).get("bytes") or b""
     if not content:
         if doc.get("original_removed"):
             raise HTTPException(status_code=409, detail="The original file was deleted after approval, so this document cannot be read again.")
@@ -607,8 +604,7 @@ def reprocess_all_failed_documents():
     requeued = []
     for doc in failed_docs:
         doc_id = doc["id"]
-        cached = get_cached_file(doc_id)
-        content = cached["bytes"] if cached else ((get_document_file(doc_id) or {}).get("bytes") or b"")
+        content = (get_document_file(doc_id) or {}).get("bytes") or b""
         if content:
             mime = doc.get("file_type") or "application/pdf"
             save_document({

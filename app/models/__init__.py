@@ -5,8 +5,6 @@ from app.models.document_repo import (
     list_documents,
     delete_document,
     delete_all_documents,
-    cache_file,
-    get_cached_file,
     add_history,
     get_history,
     get_stats,

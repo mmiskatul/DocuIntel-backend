@@ -15,7 +15,6 @@ _PUBLIC_COLUMNS = ["id", "filename", "file_type", "size_bytes", "status", "stage
 _ORIGINAL_FLAGS = "(file_base64 IS NOT NULL OR cloud_public_id IS NOT NULL) AS original_available, (file_removed_at IS NOT NULL) AS original_removed"
 _TERMINAL = ("completed", "needs_review", "failed", "rejected")
 
-_file_cache: Dict[str, Dict[str, Any]] = {}
 _history_store: Dict[str, List[Dict[str, Any]]] = {}
 
 
@@ -51,18 +50,6 @@ def get_document_file(doc_id: str) -> Optional[Dict[str, Any]]:
         except Exception as exc:
             logger.error(f"Could not fetch {doc_id} from Cloudinary: {exc}")
     return None
-
-
-def cache_file(doc_id: str, content: bytes, mimetype: str, filename: str):
-    _file_cache[doc_id] = {
-        "bytes": content,
-        "mimetype": mimetype,
-        "filename": filename,
-    }
-
-
-def get_cached_file(doc_id: str) -> Optional[Dict[str, Any]]:
-    return _file_cache.get(doc_id)
 
 
 def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -233,7 +220,6 @@ def release_original(doc_id: str) -> bool:
                     return False
             cur.execute("UPDATE documents SET file_base64 = NULL, cloud_public_id = NULL, file_removed_at = NOW() WHERE id = %s;", (doc_id,))
             conn.commit()
-            _file_cache.pop(doc_id, None)
             return True
     except Exception as exc:
         conn.rollback()
@@ -268,7 +254,6 @@ def delete_document(doc_id: str) -> bool:
             cur.execute("DELETE FROM processing_history WHERE document_id = %s;", (doc_id,))
             cur.execute("DELETE FROM documents WHERE id = %s;", (doc_id,))
             conn.commit()
-            _file_cache.pop(doc_id, None)
             _history_store.pop(doc_id, None)
             from app.services import cloud_storage
             for cid in cloud_ids:
@@ -292,7 +277,6 @@ def delete_all_documents() -> bool:
             cur.execute("DELETE FROM processing_history;")
             cur.execute("DELETE FROM documents;")
             conn.commit()
-            _file_cache.clear()
             _history_store.clear()
             from app.services import cloud_storage
             for cid in cloud_ids:
