@@ -2,7 +2,7 @@
 
 All figures below were **measured by running the code** on 2026-10-30/31 against the live stack
 (OpenAI `gpt-4o-mini`, Supabase PostgreSQL in EU, run from a developer laptop). Nothing is estimated.
-Re-run with `python tests/evaluate_benchmark.py` and `pytest tests` (needs `DATABASE_URL` and `OPENAI_API_KEY`).
+> **Note:** the automated tests and the benchmark script described below were removed from the repository on 2026-10-31. Every figure in this report was measured before their removal. They remain in git history: `git show 184f85c:tests/evaluate_benchmark.py` prints the benchmark, and `git checkout 184f85c -- tests` restores the whole suite (it needs `DATABASE_URL` and `OPENAI_API_KEY`).
 
 ## 1. Automated test suite
 
