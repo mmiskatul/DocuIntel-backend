@@ -64,7 +64,8 @@ def save_document(doc: Dict[str, Any]) -> Dict[str, Any]:
                 updates = []
                 params = []
                 for field in ["status", "stage", "progress", "page_count", "pages_done", "error", "file_base64", "cloud_public_id", "extracted_text", "filename", "file_type", "size_bytes"]:
-                    if field in doc and doc[field] is not None:
+                    # `error` may be set to None on purpose (re-processing clears the previous failure message)
+                    if field in doc and (doc[field] is not None or field == "error"):
                         updates.append(f"{field} = %s")
                         params.append(doc[field])
                 updates.append("updated_at = NOW()")

@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 from datetime import date
+from app.core.errors import handle_errors
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Response, UploadFile, status
 
 from app.models.document_repo import (
@@ -22,7 +23,7 @@ from app.models.document_repo import (
 from app.models.result_repo import get_extraction_results, save_extraction_result
 from app.schemas.document import BatchApproveRequest, ApproveRequest
 from app.config import ALLOWED_EXTENSIONS, MAX_FILES_PER_REQUEST, MAX_UPLOAD_MB
-from app.models.result_repo import append_result_issue
+from app.models.result_repo import append_result_issue, mark_results_reviewed
 from app.services.cross_verify import cross_verify
 from app.services import cloud_storage
 from app.services.job_queue import enqueue
@@ -45,6 +46,24 @@ def _original_or_error(doc_id: str) -> Dict[str, Any]:
     if doc and doc.get("original_removed"):
         raise HTTPException(status_code=410, detail="The original file was deleted after this document was approved. The extracted data and text are kept.")
     raise HTTPException(status_code=404, detail="Original file not found")
+
+
+def _index_text(doc_id: str, raw_text: str = "") -> bool:
+    """Indexes the document's text for semantic search. Never raises; returns True only when chunks were really stored."""
+    try:
+        if not raw_text:
+            cached = _original(doc_id)
+            if cached:
+                from app.services.extractor import extract_raw_text
+                raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
+        if not raw_text:
+            return False
+        from app.services.rag_service import index_document_chunks
+        index_document_chunks(doc_id, raw_text)
+        return True
+    except Exception as exc:
+        logger.warning("Vector indexing failed for %s: %s", doc_id, exc)
+        return False
 
 
 class RejectRequest(BaseModel):
@@ -89,6 +108,7 @@ class ManualCorrectionRequest(BaseModel):
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 @router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
+@handle_errors
 async def upload_documents(
     files: List[UploadFile] = File(...),
 ):
@@ -106,7 +126,11 @@ async def upload_documents(
         name = (file.filename or "").replace("\\", "/").split("/")[-1]
         if not name.lower().endswith(ALLOWED_EXTENSIONS):
             raise HTTPException(status_code=415, detail=f"Unsupported file type: '{name}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}")
-        content = await file.read()
+        try:
+            content = await file.read()
+        except Exception as exc:
+            logger.warning("Could not read upload '%s': %s", name, exc)
+            raise HTTPException(status_code=400, detail=f"'{name}' could not be read from the request.")
         if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
             raise HTTPException(status_code=413, detail=f"'{name}' exceeds the {MAX_UPLOAD_MB} MB limit.")
         mime = file.content_type or ("application/pdf" if name.lower().endswith(".pdf") else "application/octet-stream")
@@ -131,22 +155,27 @@ async def upload_documents(
     # 3. Record each document and queue it for background processing
     results = []
     for (doc_id, name, content, mime), cloud_id in zip(prepared, cloud_ids):
-        save_document({
-            "id": doc_id,
-            "filename": name,
-            "file_type": mime,
-            "size_bytes": len(content),
-            "status": "queued",
-            "stage": "Uploaded",
-            "progress": 0.1,
-            "page_count": 1,
-            "pages_done": 0,
-            "file_base64": None if cloud_id else base64.b64encode(content).decode("utf-8"),
-            "cloud_public_id": cloud_id,
-        })
-        add_history(doc_id, "Document Uploaded", f"File {name} ({len(content) / 1024:.1f} KB) queued for intake.")
-        enqueue(doc_id, name, content, mime)
-        results.append({"id": doc_id, "filename": name, "status": "queued", "stage": "Uploaded"})
+        try:
+            save_document({
+                "id": doc_id,
+                "filename": name,
+                "file_type": mime,
+                "size_bytes": len(content),
+                "status": "queued",
+                "stage": "Uploaded",
+                "progress": 0.1,
+                "page_count": 1,
+                "pages_done": 0,
+                "file_base64": None if cloud_id else base64.b64encode(content).decode("utf-8"),
+                "cloud_public_id": cloud_id,
+            })
+            add_history(doc_id, "Document Uploaded", f"File {name} ({len(content) / 1024:.1f} KB) queued for intake.")
+            enqueue(doc_id, name, content, mime)
+            results.append({"id": doc_id, "filename": name, "status": "queued", "stage": "Uploaded"})
+        except Exception as exc:  # one bad file must not abort the rest of the batch
+            logger.exception("Could not queue %s", name)
+            results.append({"id": doc_id, "filename": name, "status": "failed", "stage": "Upload Error",
+                            "error": "The file could not be queued. Please try uploading it again."})
 
     return results
 
@@ -156,6 +185,7 @@ async def upload_documents(
 # ==============================================================================
 
 @router.post("/cross-verify")
+@handle_errors
 def cross_verify_documents(body: CrossVerifyRequest):
     """
     Matches the invoices of two processed documents by invoice number and compares supplier, customer, date,
@@ -212,6 +242,7 @@ def cross_verify_documents(body: CrossVerifyRequest):
 # ==============================================================================
 
 @router.get("")
+@handle_errors
 def get_documents_list(
     q: Optional[str] = None,
     status: Optional[str] = None,
@@ -238,6 +269,7 @@ def get_documents_list(
 
 
 @router.get("/{doc_id}")
+@handle_errors
 def get_single_document(doc_id: str):
     """Retrieves single document metadata, status, and extraction summary."""
     doc = get_document(doc_id)
@@ -247,6 +279,7 @@ def get_single_document(doc_id: str):
 
 
 @router.get("/{doc_id}/status")
+@handle_errors
 def get_document_processing_status(doc_id: str):
     """
     REST API endpoint for polling document processing status and pipeline progress.
@@ -272,6 +305,7 @@ def get_document_processing_status(doc_id: str):
 
 
 @router.get("/{doc_id}/file")
+@handle_errors
 def stream_document_file(doc_id: str):
     """Streams the raw original document file (PDF or raster image)."""
     stored = _original_or_error(doc_id)
@@ -283,6 +317,7 @@ def stream_document_file(doc_id: str):
 
 
 @router.get("/{doc_id}/page/{page}/image")
+@handle_errors
 def document_page_image(doc_id: str, page: int, scale: float = 1.6):
     """One page of the original as a PNG (PDFs and images), for the in-app preview."""
     from app.services.page_render import PageOutOfRange, PreviewUnavailable, render_page_png
@@ -305,6 +340,7 @@ def document_page_image(doc_id: str, page: int, scale: float = 1.6):
 # ==============================================================================
 
 @router.get("/{doc_id}/results")
+@handle_errors
 def get_results_for_document(doc_id: str):
     """
     REST API endpoint for retrieving structured extraction results:
@@ -316,6 +352,7 @@ def get_results_for_document(doc_id: str):
 
 @router.get("/{doc_id}/history")
 @router.get("/{doc_id}/events")
+@handle_errors
 def get_audit_history(doc_id: str):
     """Retrieves human review audit history log events."""
     return get_history(doc_id)
@@ -328,6 +365,7 @@ def get_audit_history(doc_id: str):
 @router.post("/{doc_id}/correct")
 @router.put("/{doc_id}/correct")
 @router.put("/{doc_id}/results")
+@handle_errors
 def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
     """
     REST API endpoint for manual corrections.
@@ -412,22 +450,8 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
         body.reviewer,
     )
 
-    # Automatically store verified chunks in vector database (once nothing is left to review)
-    try:
-        if pending:
-            raise RuntimeError(f"{len(pending)} invoice(s) still need review; indexing deferred")
-        raw_text = res.get("raw_text") or data.get("raw_text") or ""
-        if not raw_text:
-            cached = _original(doc_id)
-            if cached:
-                from app.services.extractor import extract_raw_text
-                raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
-        if raw_text:
-            from app.services.rag_service import index_document_chunks
-            index_document_chunks(doc_id, raw_text)
-            logger.info(f"Document {doc_id} successfully vectorized following manual correction.")
-    except Exception as exc:
-        logger.warning(f"Vector storage notice on manual correction: {exc}")
+    # Store verified chunks in the vector database once nothing is left to review
+    vector_stored = False if pending else _index_text(doc_id, res.get("raw_text") or data.get("raw_text") or "")
 
     original_removed = False if pending else release_original(doc_id)
 
@@ -435,13 +459,14 @@ def manual_correct_document(doc_id: str, body: ManualCorrectionRequest):
         "success": True,
         "status": doc_status,
         "stage": "Manually Corrected" if pending else "Manually Corrected & Vectorized",
-        "vector_stored": not pending,
+        "vector_stored": vector_stored,
         "original_removed": original_removed,
         "data": data,
     }
 
 
 @router.post("/{doc_id}/reconcile")
+@handle_errors
 def reconcile_document(doc_id: str, body: ReconcileRequest):
     """Reconciles arithmetic variance, marks document completed, and stores in vector database."""
     doc = get_document(doc_id)
@@ -484,6 +509,7 @@ def reconcile_document(doc_id: str, body: ReconcileRequest):
         "stage": "Reconciled & Vectorized",
         "progress": 1.0,
     })
+    mark_results_reviewed(doc_id)
     add_history(
         doc_id,
         "Reconciled & Approved",
@@ -491,23 +517,12 @@ def reconcile_document(doc_id: str, body: ReconcileRequest):
         body.reviewer,
     )
 
-    # Store in vector database
-    try:
-        if not raw_text:
-            cached = _original(doc_id)
-            if cached:
-                from app.services.extractor import extract_raw_text
-                raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
-        if raw_text:
-            from app.services.rag_service import index_document_chunks
-            index_document_chunks(doc_id, raw_text)
-    except Exception as exc:
-        logger.warning(f"Vector storage notice on reconcile: {exc}")
-
-    return {"success": True, "status": "completed", "stage": "Reconciled & Vectorized", "vector_stored": True, "original_removed": release_original(doc_id)}
+    vector_stored = _index_text(doc_id, raw_text)
+    return {"success": True, "status": "completed", "stage": "Reconciled & Vectorized", "vector_stored": vector_stored, "original_removed": release_original(doc_id)}
 
 
 @router.post("/{doc_id}/approve")
+@handle_errors
 def approve_document(doc_id: str, body: ApproveRequest = ApproveRequest()):
     """Marks document as approved and automatically syncs all chunks into vector database."""
     doc = get_document(doc_id)
@@ -520,30 +535,21 @@ def approve_document(doc_id: str, body: ApproveRequest = ApproveRequest()):
         "stage": "Approved & Vectorized",
         "progress": 1.0,
     })
+    mark_results_reviewed(doc_id)
     add_history(doc_id, "Document Approved & Vectorized", f"Approved by {body.reviewer}. Chunks stored in vector database.", body.reviewer)
 
-    try:
-        from app.services.rag_service import index_document_chunks
-        results = get_extraction_results(doc_id)
-        raw_text = ""
-        if results and len(results) > 0:
-            raw_text = results[0].get("raw_text") or (results[0].get("data") or {}).get("raw_text") or ""
-        if not raw_text:
-            cached = _original(doc_id)
-            if cached:
-                from app.services.extractor import extract_raw_text
-                raw_text, _ = extract_raw_text(cached["bytes"], cached["filename"])
-        if raw_text:
-            index_document_chunks(doc_id, raw_text)
-            logger.info(f"Document {doc_id} successfully stored in vector database.")
-    except Exception as exc:
-        logger.warning(f"Vector storage notice on approval: {exc}")
+    results = get_extraction_results(doc_id)
+    raw_text = ""
+    if results:
+        raw_text = results[0].get("raw_text") or (results[0].get("data") or {}).get("raw_text") or ""
+    vector_stored = _index_text(doc_id, raw_text)
 
     # The document is accepted: its original is no longer needed (the extracted data and text stay)
-    return {"success": True, "status": "completed", "stage": "Approved & Vectorized", "vector_stored": True, "original_removed": release_original(doc_id)}
+    return {"success": True, "status": "completed", "stage": "Approved & Vectorized", "vector_stored": vector_stored, "original_removed": release_original(doc_id)}
 
 
 @router.post("/{doc_id}/reject")
+@handle_errors
 def reject_document(doc_id: str, body: RejectRequest = RejectRequest()):
     """Marks document as rejected due to format mismatch or unverified data."""
     doc = get_document(doc_id)
@@ -568,6 +574,7 @@ def reject_document(doc_id: str, body: RejectRequest = RejectRequest()):
 @router.post("/{doc_id}/reprocess")
 @router.post("/{doc_id}/retry")
 @router.post("/{doc_id}/re-ocr")
+@handle_errors
 def reprocess_document(doc_id: str):
     """
     REST API endpoint for failed-job reprocessing.
@@ -606,6 +613,7 @@ def reprocess_document(doc_id: str):
 
 
 @router.post("/reprocess-failed")
+@handle_errors
 def reprocess_all_failed_documents():
     """
     REST API endpoint to batch reprocess all failed jobs.
@@ -641,16 +649,20 @@ def reprocess_all_failed_documents():
 # ==============================================================================
 
 @router.post("/batch-approve")
+@handle_errors
 def batch_approve(dto: BatchApproveRequest):
     """Batch approves multiple documents."""
     count = 0
     for doc_id in dto.document_ids:
+        if not get_document(doc_id):
+            continue  # unknown or already deleted ids are skipped, not counted as approved
         save_document({
             "id": doc_id,
             "status": "completed",
             "stage": "Approved",
             "progress": 1.0,
         })
+        mark_results_reviewed(doc_id)
         add_history(doc_id, "Document Approved", f"Batch approved by {dto.reviewer}.", dto.reviewer)
         release_original(doc_id)
         count += 1
@@ -658,14 +670,18 @@ def batch_approve(dto: BatchApproveRequest):
 
 
 @router.delete("/{doc_id}")
+@handle_errors
 def delete_single(doc_id: str):
     """Deletes single document and associated extraction data."""
-    delete_document(doc_id)
+    if not delete_document(doc_id):
+        raise HTTPException(status_code=500, detail="Could not delete the document.")
     return {"success": True}
 
 
 @router.delete("")
+@handle_errors
 def delete_all():
     """Wipes all documents and associated extraction data."""
-    delete_all_documents()
+    if not delete_all_documents():
+        raise HTTPException(status_code=500, detail="Could not delete the documents.")
     return {"success": True}

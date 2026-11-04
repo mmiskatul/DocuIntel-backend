@@ -146,14 +146,17 @@ def ensure_schema():
                 "CREATE INDEX IF NOT EXISTS idx_results_document ON extraction_results(document_id);",
                 "CREATE INDEX IF NOT EXISTS idx_results_invoice ON extraction_results(invoice_number, supplier_name);",
                 "CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status, created_at DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_embeddings_document ON document_embeddings(document_id);",
             ):
                 cur.execute(ddl)
 
             # 4. Ensure pgvector extension and document embeddings table (semantic search)
+            # A failed statement aborts the whole transaction in PostgreSQL, so optional steps run inside a savepoint.
+            cur.execute("SAVEPOINT ext_vector;")
             try:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                cur.execute("RELEASE SAVEPOINT ext_vector;")
             except Exception as ext_err:
+                cur.execute("ROLLBACK TO SAVEPOINT ext_vector;")
                 logger.warning(f"Vector extension notice: {ext_err}")
 
             cur.execute("""
@@ -167,13 +170,18 @@ def ensure_schema():
                 );
             """)
 
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_document ON document_embeddings(document_id);")
+
             # 4. HNSW cosine index for sub-millisecond similarity search
+            cur.execute("SAVEPOINT hnsw_index;")
             try:
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS doc_embed_hnsw 
                     ON document_embeddings USING hnsw (embedding vector_cosine_ops);
                 """)
+                cur.execute("RELEASE SAVEPOINT hnsw_index;")
             except Exception as index_err:
+                cur.execute("ROLLBACK TO SAVEPOINT hnsw_index;")
                 logger.warning(f"HNSW index notice: {index_err}")
 
             conn.commit()

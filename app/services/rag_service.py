@@ -54,12 +54,19 @@ PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
 answer_chain = PROMPT_TEMPLATE | answer_model | StrOutputParser()
 
 
-def generate_embedding(text: str) -> List[float]:
-    """Generates 384-dimensional vector embedding."""
+class EmbeddingUnavailable(RuntimeError):
+    """The embedding service could not be reached, so a meaning-based search cannot be done."""
+
+
+def generate_embedding(text: str, strict: bool = False) -> List[float]:
+    """Generates a 384-dimensional vector embedding. With strict=True a failure raises EmbeddingUnavailable
+    instead of returning a zero vector (which would match nothing meaningful)."""
     try:
         return embeddings_model.embed_query(text[:8000])
     except Exception as exc:
         logger.error(f"Embedding generation error: {exc}")
+        if strict:
+            raise EmbeddingUnavailable("The semantic search service is temporarily unavailable.") from exc
         return [0.0] * 384
 
 

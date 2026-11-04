@@ -99,6 +99,20 @@ def save_extraction_result(res_dict: Dict[str, Any], insert_new: bool = False) -
         release_conn(conn)
 
 
+def mark_results_reviewed(doc_id: str) -> None:
+    """Approving a document means a human accepted every invoice in it: nothing stays flagged for review."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE extraction_results SET needs_review = FALSE, reviewed = TRUE WHERE document_id = %s AND needs_review;", (doc_id,))
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
 def delete_results_for_document(doc_id: str) -> None:
     """Removes previous extraction rows (used before re-processing so stale invoices do not linger)."""
     conn = get_conn()
@@ -135,16 +149,24 @@ def update_result_correction(res_id: int, corrections: Dict[str, Any], reviewer:
                 return None
             data = existing.get("data") or {}
             data.update(corrections)
-            query = """
+            data["issues"] = []
+            # The top-level columns are what listings, search and duplicate checks read, so they must follow the correction
+            columns = {}
+            for field in ("invoice_number", "invoice_date", "supplier_name", "customer_name", "subtotal", "tax", "total", "currency"):
+                if corrections.get(field) is not None:
+                    columns[field] = corrections[field]
+            assignments = "".join(f"{field} = %s, " for field in columns)
+            query = f"""
                 UPDATE extraction_results
-                SET corrected_data = %s,
+                SET {assignments}corrected_data = %s,
                     data = %s,
+                    validation_errors = '[]'::jsonb,
                     needs_review = FALSE,
                     reviewed = TRUE
                 WHERE id = %s
                 RETURNING *;
             """
-            cur.execute(query, (json.dumps(corrections), json.dumps(data), res_id))
+            cur.execute(query, (*columns.values(), json.dumps(corrections), json.dumps(data), res_id))
             updated = cur.fetchone()
             conn.commit()
             return dict(updated) if updated else None

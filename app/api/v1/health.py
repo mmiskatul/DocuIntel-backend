@@ -14,7 +14,7 @@ def health():
         "status": "ok",
         "backend": "online",
         "service": "DocuIntel Backend",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "engine": "Document Intelligence Engine",
         "database": "connected" if database.db_pool else "connecting",
     }
